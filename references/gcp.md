@@ -14,15 +14,25 @@ GCP allows **10 keys per service account**. This means up to 10 team members can
 
 ## Bootstrap Token Command
 
-Tell the user to run locally:
+Tell the user to run in [Google Cloud Shell](https://console.cloud.google.com) (click the ">_" terminal icon in the Cloud Console) or on their local machine if they have `gcloud` installed:
 
 ```bash
-gcloud auth login          # if not already logged in
 gcloud config set project PROJECT_ID
 gcloud auth print-access-token
 ```
 
 This produces a token valid for ~1 hour.
+
+## Sandbox Setup
+
+The Claude Code on the Web sandbox may not have `gcloud` pre-installed. If `gcloud` is not available, install it before activating credentials:
+
+```bash
+if ! command -v gcloud &> /dev/null; then
+  curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user
+  export PATH="/home/user/google-cloud-sdk/bin:$PATH"
+fi
+```
 
 ## API Base
 
