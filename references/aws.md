@@ -1,11 +1,25 @@
 # AWS Reference
 
-## User Prerequisites
+## User Prerequisites (First-Time Setup)
 
 The user's AWS account needs **IAM full access** or at minimum:
-- `iam:CreateUser`
+- `iam:CreateGroup`, `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
-- `iam:AttachUserPolicy` / `iam:PutUserPolicy`
+- `iam:AttachGroupPolicy` / `iam:PutGroupPolicy`
+
+## Team Member Prerequisites (Adding to Existing Setup)
+
+The user's AWS account needs:
+- `iam:CreateUser`, `iam:AddUserToGroup`
+- `iam:CreateAccessKey`
+
+## Multi-User Strategy
+
+AWS allows only **2 access keys per IAM user**, which is too few for team sharing. Instead, this skill creates:
+- An **IAM group** (`claude-agents`) with the shared policies attached
+- A **separate IAM user per team member** (`claude-agent-<sanitized-email>`) added to that group
+
+Each team member gets their own IAM user and access key, but all users inherit the same permissions from the group. The `.cloud-config.json` `service_account` field stores the group name.
 
 ## Bootstrap Token Command
 
@@ -33,7 +47,7 @@ echo '{"access_key":"'$AWS_ACCESS_KEY_ID'","secret_key":"'$AWS_SECRET_ACCESS_KEY
 
 Use the AWS CLI (`aws`) if available in the environment. Otherwise, use signed API calls with the temporary credentials.
 
-## Create IAM User
+## First-Time Setup: Create Group and First User
 
 ```bash
 # Export bootstrap credentials
@@ -41,14 +55,23 @@ export AWS_ACCESS_KEY_ID="..."
 export AWS_SECRET_ACCESS_KEY="..."
 export AWS_SESSION_TOKEN="..."
 
-# Create the user
-aws iam create-user --user-name claude-agent
+# Sanitize email for use as IAM user name (replace @ and . with -)
+USER_EMAIL=$(git config user.email)
+SANITIZED_EMAIL=$(echo "$USER_EMAIL" | sed 's/[@.]/-/g')
+
+# Create the shared group
+aws iam create-group --group-name claude-agents
+
+# Create the user and add to group
+aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+aws iam add-user-to-group \
+  --group-name claude-agents \
+  --user-name "claude-agent-${SANITIZED_EMAIL}"
 
 # Create access key
-aws iam create-access-key --user-name claude-agent > credentials.json
+aws iam create-access-key \
+  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
 ```
-
-The credentials file will contain `AccessKey.AccessKeyId` and `AccessKey.SecretAccessKey`.
 
 Reformat `credentials.json` to a clean structure before encrypting:
 
@@ -63,21 +86,50 @@ mv credentials_clean.json credentials.json
 
 Ask the user which AWS region to use if not obvious from the repo.
 
-## Grant Roles (Attach Policies)
+**For `.cloud-config.json`:** set `service_account` to `claude-agents` (the group name).
+
+## Add Team Member: Create New User in Existing Group
+
+```bash
+USER_EMAIL=$(git config user.email)
+SANITIZED_EMAIL=$(echo "$USER_EMAIL" | sed 's/[@.]/-/g')
+
+# Create user and add to existing group
+aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+aws iam add-user-to-group \
+  --group-name claude-agents \
+  --user-name "claude-agent-${SANITIZED_EMAIL}"
+
+# Create access key
+aws iam create-access-key \
+  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
+
+# Reformat
+cat credentials.json | jq '{
+  access_key_id: .AccessKey.AccessKeyId,
+  secret_access_key: .AccessKey.SecretAccessKey,
+  region: "us-east-1"
+}' > credentials_clean.json
+mv credentials_clean.json credentials.json
+```
+
+## Grant Roles (Attach Policies to Group)
+
+Policies are attached to the **group**, not individual users. This way all team members share the same permissions.
 
 For AWS managed policies:
 
 ```bash
-aws iam attach-user-policy \
-  --user-name claude-agent \
+aws iam attach-group-policy \
+  --group-name claude-agents \
   --policy-arn arn:aws:iam::aws:policy/POLICY_NAME
 ```
 
 For inline policies (more granular):
 
 ```bash
-aws iam put-user-policy \
-  --user-name claude-agent \
+aws iam put-group-policy \
+  --group-name claude-agents \
   --policy-name descriptive-name \
   --policy-document '{
     "Version": "2012-10-17",
@@ -106,6 +158,33 @@ aws sts get-caller-identity
 ```
 
 **Note:** Unlike GCP, AWS credentials are exported as environment variables, not activated via a CLI command. They persist for the duration of the shell session.
+
+## User Management
+
+List users in the group:
+
+```bash
+aws iam get-group --group-name claude-agents
+```
+
+Remove a team member (if they leave):
+
+```bash
+SANITIZED_EMAIL=$(echo "departed-user@example.com" | sed 's/[@.]/-/g')
+
+# Delete their access keys
+for KEY_ID in $(aws iam list-access-keys --user-name "claude-agent-${SANITIZED_EMAIL}" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+  aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id "$KEY_ID"
+done
+
+# Remove from group and delete user
+aws iam remove-user-from-group \
+  --group-name claude-agents \
+  --user-name "claude-agent-${SANITIZED_EMAIL}"
+aws iam delete-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+```
+
+Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.
 
 ## Common Policies Reference
 
