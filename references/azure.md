@@ -1,8 +1,16 @@
 # Azure Reference
 
-## User Prerequisites
+## User Prerequisites (First-Time Setup)
 
 The user needs **Owner** or **User Access Administrator + Contributor** role on the Azure subscription, plus **Application Administrator** in Entra ID (formerly Azure AD) to create service principals.
+
+## Team Member Prerequisites (Adding to Existing Setup)
+
+The user needs **Application Administrator** (or **Cloud Application Administrator**) in Entra ID to add a client secret to the existing app registration. No subscription-level role is needed since roles are already assigned to the service principal.
+
+## Key Limits
+
+Azure allows **unlimited client secrets per app registration**. Each team member gets their own client secret for the same application/service principal. No practical team size limit.
 
 ## Bootstrap Token Command
 
@@ -74,6 +82,8 @@ If the tenant ID is not available, ask the user.
 
 ## Grant Roles
 
+Roles are assigned to the **service principal**, so they apply to all team members automatically. No per-user role assignment needed.
+
 ```bash
 SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
 SP_OBJECT_ID=$(az ad sp show --id $APP_ID --query id -o tsv)
@@ -105,6 +115,59 @@ curl -X PUT \
 ```
 
 Prefer scoping roles to specific resource groups rather than the entire subscription.
+
+## Add Client Secret for Existing App (Team Members)
+
+When a new team member joins, create a new client secret for the existing app. Read the `appId` from `.cloud-config.json` (stored as `service_account`).
+
+```bash
+# Get the app's object ID from its appId
+APP_ID=$(jq -r .service_account .cloud-config.json)
+OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '$APP_ID'" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.value[0].id')
+
+USER_EMAIL=$(git config user.email)
+
+# Add a new client secret labeled with the user's email
+curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
+  > secret.json
+
+# Assemble credentials (appId and tenant are the same for all team members)
+TENANT_ID=$(jq -r .tenant .cloud-config.json 2>/dev/null || echo "ASK_USER")
+jq -n \
+  --arg appId "$APP_ID" \
+  --arg password "$(jq -r .secretText secret.json)" \
+  --arg tenant "$TENANT_ID" \
+  '{appId: $appId, password: $password, tenant: $tenant}' \
+  > credentials.json
+
+rm -f secret.json
+```
+
+**Note:** The `.cloud-config.json` for Azure should also store `tenant` alongside the other fields.
+
+## Secret Management
+
+List client secrets for the app:
+
+```bash
+curl -s "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  -H "Authorization: Bearer $TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
+```
+
+Remove a specific client secret (if a team member leaves):
+
+```bash
+curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"keyId": "KEY_ID_TO_REMOVE"}'
+```
+
+Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.
 
 ## Activate (Subsequent Sessions)
 
