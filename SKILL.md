@@ -1,17 +1,31 @@
 ---
 name: cloud-bootstrap
-description: Bootstrap and manage cloud service account credentials (GCP, AWS, Azure) for a repo used in Claude Code on the Web. Use this skill whenever the user mentions GCP, Google Cloud, AWS, Amazon Web Services, Azure, service accounts, cloud credentials, IAM, or wants to set up cloud infrastructure for a project. Also trigger when you detect .cloud-credentials.enc or .cloud-config.json in the repo, or when a cloud API call fails with authentication or permission errors. This skill handles both first-time setup (creating service accounts, encrypting keys, persisting config) and subsequent sessions (decrypting and activating credentials). Even if the user just says "deploy to Lambda" or "set up a Cloud Run service" or "create an Azure Function", use this skill first to ensure cloud auth is in place.
+description: Bootstrap and manage cloud service account credentials (GCP, AWS, Azure) for a repo used in Claude Code on the Web. Use this skill whenever the user mentions GCP, Google Cloud, AWS, Amazon Web Services, Azure, service accounts, cloud credentials, IAM, or wants to set up cloud infrastructure for a project. Also trigger when you detect .cloud-credentials.*.enc or .cloud-config.json in the repo, or when a cloud API call fails with authentication or permission errors. This skill handles first-time setup, adding new team members, and subsequent session authentication. Even if the user just says "deploy to Lambda" or "set up a Cloud Run service" or "create an Azure Function", use this skill first to ensure cloud auth is in place.
 ---
 
 # Cloud Bootstrap
 
-Set up and manage cloud provider credentials stored encrypted in the repo. Designed for Claude Code on the Web, where the repo is the only persistent storage across sessions.
+Set up and manage cloud provider credentials stored encrypted in the repo. Designed for Claude Code on the Web, where the repo is the only persistent storage across sessions. Supports multiple team members, each with their own encrypted key file and passphrase.
 
 **Requires:** An encryption passphrase in one of these environment variables (checked in order):
 - `GCP_CREDENTIALS_KEY`, `AWS_CREDENTIALS_KEY`, or `AZURE_CREDENTIALS_KEY` (provider-specific)
 - `CLOUD_CREDENTIALS_KEY` (universal fallback)
 
-This lets users who work with multiple providers across repos use distinct passphrases per provider, while users with a single provider can just set `CLOUD_CREDENTIALS_KEY`.
+Each team member sets their own passphrase. Passphrases are never shared between users.
+
+## Identify Current User
+
+Get the current user's identity from git config:
+
+```bash
+USER_EMAIL=$(git config user.email)
+if [ -z "$USER_EMAIL" ]; then
+  echo "ERROR: git user.email is not set."
+  exit 1
+fi
+```
+
+This email is used to name the per-user encrypted credentials file: `.cloud-credentials.<email>.enc`
 
 ## Resolve Credentials Key
 
@@ -35,16 +49,19 @@ resolve_credentials_key() {
 }
 ```
 
-**Store which env var was used** in `.cloud-config.json` (as `"credentials_key_env"`) so subsequent sessions know which variable to check without re-resolving.
-
 ## Quick Check: Which Phase Am I In?
 
-1. If `.cloud-credentials.enc` exists in the repo, go to **Authenticate (Subsequent Sessions)**
-2. If `.cloud-credentials.enc` does NOT exist, go to **First-Time Setup**
+Determine the current user's email, then:
+
+1. If `.cloud-config.json` does NOT exist, go to **First-Time Setup**
+2. If `.cloud-config.json` exists BUT `.cloud-credentials.<user-email>.enc` does NOT, go to **Add Team Member**
+3. If `.cloud-credentials.<user-email>.enc` exists, go to **Authenticate (Subsequent Sessions)**
 
 ---
 
 ## First-Time Setup
+
+This is for the first user setting up cloud access on the repo.
 
 ### Step 1: Identify Provider
 
@@ -95,37 +112,22 @@ Using the bootstrap token and provider-specific commands from the reference file
 1. Create the service account/identity.
 2. Grant ONLY the approved roles.
 3. Generate credentials (key file or access key pair).
-4. Resolve the encryption key using the logic above:
+4. Resolve the encryption key using the logic above.
+5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
-   PROVIDER="<gcp|aws|azure>"
-   CRED_KEY_ENV="${PROVIDER^^}_CREDENTIALS_KEY"
-   KEY="${!CRED_KEY_ENV:-$CLOUD_CREDENTIALS_KEY}"
-   if [ -z "$KEY" ]; then
-     echo "ERROR: Set ${CRED_KEY_ENV} or CLOUD_CREDENTIALS_KEY."
-     exit 1
-   fi
-   # Remember which env var worked
-   if [ -n "${!CRED_KEY_ENV}" ]; then
-     USED_ENV="$CRED_KEY_ENV"
-   else
-     USED_ENV="CLOUD_CREDENTIALS_KEY"
-   fi
-   ```
-5. Encrypt the credentials:
-   ```bash
+   USER_EMAIL=$(git config user.email)
    echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
      -pass stdin \
-     -in credentials.json -out .cloud-credentials.enc
+     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
    ```
-6. Save config (note the `credentials_key_env` field):
+6. Save shared config:
    ```bash
    cat > .cloud-config.json << EOF
    {
-     "provider": "$PROVIDER",
+     "provider": "<gcp|aws|azure>",
      "project_id": "<project/account/subscription identifier>",
      "service_account": "<service account email or ARN or client ID>",
-     "roles": ["<role1>", "<role2>"],
-     "credentials_key_env": "$USED_ENV"
+     "roles": ["<role1>", "<role2>"]
    }
    EOF
    ```
@@ -139,7 +141,7 @@ Using the bootstrap token and provider-specific commands from the reference file
    credentials.json
    /tmp/credentials.json
    ```
-9. Commit `.cloud-credentials.enc`, `.cloud-config.json`, and the `.gitignore` update.
+9. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update.
 
 ### Step 6: Update CLAUDE.md
 
@@ -148,10 +150,10 @@ Append a `## Cloud Credentials` section to CLAUDE.md (create the file if it does
 - The provider and project/account identifier
 - The service account identity
 - The roles granted, with one-line justification for each
-- How to authenticate (decrypt, activate, set project), using the exact commands for the provider
+- That this is a multi-user setup: each team member has their own `.cloud-credentials.<email>.enc` file
+- How to authenticate (the agent handles this automatically via this skill)
+- How new team members can join (the agent handles this via the **Add Team Member** flow)
 - How to escalate permissions
-
-This ensures future sessions can authenticate without needing this skill installed.
 
 ### Step 7: Done
 
@@ -159,29 +161,78 @@ The bootstrap token is now spent. Do not store it anywhere.
 
 ---
 
+## Add Team Member
+
+This flow runs when `.cloud-config.json` exists (the service account is already set up) but the current user has no encrypted credentials file yet.
+
+### Step 1: Read Existing Config
+
+Read `.cloud-config.json` to get the provider, project ID, and service account identity. Read the corresponding provider reference file.
+
+### Step 2: Explain and Get Bootstrap Token
+
+Tell the user:
+
+```
+This repo already has cloud access configured:
+  Provider: <provider>
+  Project: <project_id>
+  Service account: <service_account>
+  Roles: <roles>
+
+I need to create a new key for this service account, encrypted with your
+personal passphrase. This means you won't need anyone else's password.
+
+Please run this on your local machine and paste the result:
+  <bootstrap token command from provider reference>
+```
+
+Tell them the specific permission needed from the provider reference file (see "Team Member Prerequisites" in each reference).
+
+### Step 3: Create New Key and Encrypt
+
+Using the bootstrap token and provider-specific commands:
+
+1. Create a **new key** for the **existing** service account (do NOT create a new service account). See the "Add Key for Existing Service Account" section in the provider reference.
+2. Resolve the encryption key for the current user.
+3. Encrypt with the user's email in the filename:
+   ```bash
+   USER_EMAIL=$(git config user.email)
+   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+     -pass stdin \
+     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
+   ```
+4. **Delete the plaintext credentials immediately:**
+   ```bash
+   rm -f credentials.json
+   ```
+5. Commit the new `.cloud-credentials.<email>.enc` file.
+
+### Step 4: Done
+
+The bootstrap token is now spent. The user can now authenticate in future sessions using their own passphrase.
+
+---
+
 ## Authenticate (Subsequent Sessions)
 
 Run this every time you need cloud access and are not yet authenticated:
 
-1. Read `.cloud-config.json` to determine the provider and which env var holds the key.
-2. Read the corresponding provider reference file in this skill's directory.
-3. Resolve the encryption key:
+1. Get the current user's email:
    ```bash
-   CRED_KEY_ENV=$(jq -r .credentials_key_env .cloud-config.json)
-   KEY="${!CRED_KEY_ENV}"
-   if [ -z "$KEY" ]; then
-     echo "ERROR: $CRED_KEY_ENV is not set."
-     exit 1
-   fi
+   USER_EMAIL=$(git config user.email)
    ```
-4. Decrypt:
+2. Read `.cloud-config.json` to determine the provider.
+3. Read the corresponding provider reference file in this skill's directory.
+4. Resolve the encryption key.
+5. Decrypt the user's credentials:
    ```bash
    echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
-     -in .cloud-credentials.enc -out /tmp/credentials.json
+     -in ".cloud-credentials.${USER_EMAIL}.enc" -out /tmp/credentials.json
    ```
-5. Activate using the provider-specific commands from the reference file.
-6. **Delete `/tmp/credentials.json` immediately after activation.**
+6. Activate using the provider-specific commands from the reference file.
+7. **Delete `/tmp/credentials.json` immediately after activation.**
 
 ---
 
@@ -211,4 +262,5 @@ If any cloud API call fails with 403, "access denied", or equivalent:
 - Prefer granular roles over broad roles (e.g., `roles/cloudfunctions.developer` not `roles/editor`; `S3ReadOnlyAccess` not `AdministratorAccess`).
 - Always delete `/tmp/credentials.json` immediately after activation.
 - If the bootstrap token expires before setup is complete, ask the user for a new one.
-- `GCP_CREDENTIALS_KEY` / `AWS_CREDENTIALS_KEY` / `AZURE_CREDENTIALS_KEY` (or `CLOUD_CREDENTIALS_KEY`) is the only secret not stored in the repo. Everything else is self-contained.
+- The encryption passphrase is the only secret not stored in the repo. Each user has their own passphrase, never shared.
+- Each user's `.cloud-credentials.<email>.enc` file is committed to the repo. This is safe because the file is encrypted and each user's passphrase is independent.
