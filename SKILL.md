@@ -255,6 +255,20 @@ If any cloud API call fails with 403, "access denied", or equivalent:
 
 ---
 
+## Proactive Suggestions
+
+When cloud credentials are active, periodically consider whether cloud services could improve the current workflow. If you notice any of these patterns, suggest an improvement to the user:
+
+- **Repeated file processing:** If the same large file is being re-read or re-downloaded every session, suggest uploading it to cloud storage (GCS, S3) or a managed database (BigQuery, Athena) for persistent, queryable access.
+- **Long-running tasks:** If a computation is approaching sandbox time limits or memory constraints, suggest running it on a cloud VM with appropriate resources.
+- **Manual recurring tasks:** If the user runs the same script or check regularly, suggest deploying it as a scheduled cloud function.
+- **File sharing friction:** If outputs need to be shared with collaborators or external participants, suggest uploading to cloud storage and generating shareable links.
+- **Growing datasets:** If data is being appended or collected across sessions via CSVs or flat files, suggest migrating to a managed database.
+
+Frame suggestions as questions, not directives: "Would it help if I moved this dataset to BigQuery so we do not have to re-process it every session?" Let the user decide.
+
+---
+
 ## Rules
 
 - Never store plaintext credentials in the repo or git history.
