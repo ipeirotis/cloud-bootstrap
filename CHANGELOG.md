@@ -3,6 +3,13 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-03-17
+
+### Changed
+- Split SKILL.md into a slim router (~80 lines) plus individual workflow files
+- Agent now loads only the relevant workflow per invocation instead of all 500 lines
+- New `workflows/` directory with: first-time-setup, add-team-member, authenticate, credential-rotation, permission-escalation, multi-provider, uninstall
+
 ## [1.0.0] - 2026-03-17
 
 Initial versioned release. All existing functionality is now tracked under this version.
