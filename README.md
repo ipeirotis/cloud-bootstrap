@@ -69,6 +69,21 @@ git commit -m "Add cloud-bootstrap skill"
 
 > "Clone the cloud-bootstrap skill from https://github.com/ipeirotis/cloud-bootstrap into `.claude/skills/cloud-bootstrap/` in this repo and commit it."
 
+## Updating
+
+Check which version you have and whether a newer one is available:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/update.sh | bash
+```
+
+This will:
+1. Show your installed version and the latest version
+2. Display the changelog entries you'd be getting
+3. Ask for confirmation before updating
+
+You can also check your installed version at any time by looking at the `version:` field in `.claude/skills/cloud-bootstrap/SKILL.md`.
+
 ## Prerequisites
 
 - Encryption passphrase set as an environment variable in Claude Code on the Web: either `GCP_CREDENTIALS_KEY` / `AWS_CREDENTIALS_KEY` / `AZURE_CREDENTIALS_KEY`, or the universal `CLOUD_CREDENTIALS_KEY`

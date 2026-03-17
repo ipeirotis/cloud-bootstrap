@@ -8,7 +8,10 @@ This is a Claude Code skill repository — it contains no executable source code
 .
 ├── README.md              # Installation instructions and project overview
 ├── SKILL.md               # Main skill definition (frontmatter + workflows)
+├── VERSION                # Current version (semver)
+├── CHANGELOG.md           # Version history and release notes
 ├── install.sh             # One-line installer script
+├── update.sh              # Update checker and upgrader
 ├── references/
 │   ├── gcp.md             # GCP-specific commands and API reference
 │   ├── aws.md             # AWS-specific commands and API reference
@@ -34,6 +37,13 @@ Key concepts:
 - Shell snippets in the docs are meant to be executed by Claude Code at runtime in the user's repo, not here. Ensure they are correct and portable (POSIX-compatible where possible, bash where necessary).
 - Keep provider-specific details in `references/<provider>.md`, not in SKILL.md. SKILL.md should contain only the provider-agnostic workflow.
 - Encryption/decryption commands must always use `echo "$KEY" | openssl ... -pass stdin` (never `-pass pass:$KEY`) to avoid leaking the key in process listings.
+
+## Versioning
+
+- The canonical version lives in `VERSION` (single line, semver).
+- `SKILL.md` frontmatter carries a `version:` field that must match `VERSION`.
+- When making user-facing changes, bump the version in both places and add a new entry to `CHANGELOG.md`.
+- Use semver: patch for fixes, minor for new features, major for breaking changes.
 
 ## Conventions
 
