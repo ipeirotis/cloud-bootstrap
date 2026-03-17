@@ -76,9 +76,9 @@ rm -f /tmp/credentials.json
 
 # Persist env vars for the session via CLAUDE_ENV_FILE
 if [ -n "$CLAUDE_ENV_FILE" ]; then
-  echo "export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> "$CLAUDE_ENV_FILE"
-  echo "export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> "$CLAUDE_ENV_FILE"
-  echo "export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+  echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
+  echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
+  echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
 fi
 
 echo "AWS credentials activated for $USER_EMAIL"
