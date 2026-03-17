@@ -11,6 +11,7 @@ Planned improvements and open items for cloud-bootstrap.
 
 ## Features
 
+- [ ] Auto-install cloud CLIs — before any cloud operation, detect whether the required CLI (`gcloud`, `aws`, or `az`) is installed and install it if missing. Add installation commands to each provider reference file and a pre-flight check step to SKILL.md. On Claude Code on the Web these tools are not pre-installed, so the skill should handle this automatically using a SessionStart hook or as the first step of every workflow.
 - [ ] Support credential rotation — a workflow for replacing an existing encrypted key without re-bootstrapping
 - [ ] Add a verification step after authentication that confirms the credentials actually work (e.g., a lightweight API call per provider)
 - [ ] Support multiple cloud providers in the same repo (currently `.cloud-config.json` assumes a single provider)
