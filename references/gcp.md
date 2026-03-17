@@ -23,9 +23,9 @@ gcloud auth print-access-token
 
 This produces a token valid for ~1 hour.
 
-## Sandbox Setup
+## CLI Installation
 
-The Claude Code on the Web sandbox may not have `gcloud` pre-installed. If `gcloud` is not available, install it before activating credentials:
+The Claude Code on the Web sandbox does not have `gcloud` pre-installed. Use this script to install it:
 
 ```bash
 if ! command -v gcloud &> /dev/null; then
@@ -33,6 +33,67 @@ if ! command -v gcloud &> /dev/null; then
   export PATH="/home/user/google-cloud-sdk/bin:$PATH"
 fi
 ```
+
+### SessionStart Hook
+
+After setup completes, create a SessionStart hook that installs the CLI **and** authenticates automatically. Create `.claude/hooks/cloud-auth.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+# --- Install gcloud if missing ---
+if ! command -v gcloud &> /dev/null; then
+  curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user
+  export PATH="/home/user/google-cloud-sdk/bin:$PATH"
+fi
+
+# --- Auto-authenticate if credentials exist ---
+CONFIG=".cloud-config.json"
+if [ ! -f "$CONFIG" ]; then exit 0; fi
+
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+if [ "$PROVIDER" != "gcp" ]; then exit 0; fi
+
+USER_EMAIL=$(git config user.email 2>/dev/null || true)
+ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
+if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
+
+KEY="${GCP_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
+if [ -z "$KEY" ]; then exit 0; fi
+
+echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || exit 0
+
+gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null
+gcloud config set project "$(jq -r .project_id "$CONFIG")" 2>/dev/null
+rm -f /tmp/credentials.json
+
+echo "GCP credentials activated for $USER_EMAIL"
+```
+
+Then add to `.claude/settings.json` (create the file and directories if needed):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cloud-auth.sh\"",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object. Commit both `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
 
 ## API Base
 
@@ -130,6 +191,16 @@ gcloud auth activate-service-account --key-file=/tmp/credentials.json
 gcloud config set project $(jq -r .project_id .cloud-config.json)
 rm -f /tmp/credentials.json
 ```
+
+## Verify (Smoke Test)
+
+After activating credentials, run this lightweight check to confirm they work:
+
+```bash
+gcloud projects describe $(jq -r .project_id .cloud-config.json) --format="value(projectId)"
+```
+
+If this fails with a permission error, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the service account.
 
 ## Common Roles Reference
 

@@ -21,6 +21,94 @@ AWS allows only **2 access keys per IAM user**, which is too few for team sharin
 
 Each team member gets their own IAM user and access key, but all users inherit the same permissions from the group. The `.cloud-config.json` `service_account` field stores the group name.
 
+## CLI Installation
+
+The Claude Code on the Web sandbox may not have `aws` pre-installed. Use this script to install it:
+
+```bash
+if ! command -v aws &> /dev/null; then
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
+  export PATH="/home/user/bin:$PATH"
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+fi
+```
+
+### SessionStart Hook
+
+After setup completes, create a SessionStart hook that installs the CLI **and** authenticates automatically. Create `.claude/hooks/cloud-auth.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+# --- Install aws CLI if missing ---
+if ! command -v aws &> /dev/null; then
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
+  export PATH="/home/user/bin:$PATH"
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+fi
+
+# --- Auto-authenticate if credentials exist ---
+CONFIG=".cloud-config.json"
+if [ ! -f "$CONFIG" ]; then exit 0; fi
+
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+if [ "$PROVIDER" != "aws" ]; then exit 0; fi
+
+USER_EMAIL=$(git config user.email 2>/dev/null || true)
+ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
+if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
+
+KEY="${AWS_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
+if [ -z "$KEY" ]; then exit 0; fi
+
+echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || exit 0
+
+export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
+export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
+export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
+rm -f /tmp/credentials.json
+
+# Persist env vars for the session via CLAUDE_ENV_FILE
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  echo "export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> "$CLAUDE_ENV_FILE"
+  echo "export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> "$CLAUDE_ENV_FILE"
+  echo "export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+fi
+
+echo "AWS credentials activated for $USER_EMAIL"
+```
+
+Then add to `.claude/settings.json` (create the file and directories if needed):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cloud-auth.sh\"",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object. Commit both `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
+
+**Note:** AWS credentials are environment variables, so the hook uses `$CLAUDE_ENV_FILE` to persist them for the entire session.
+
 ## Bootstrap Token Command
 
 Tell the user to run locally:
@@ -158,6 +246,16 @@ aws sts get-caller-identity
 ```
 
 **Note:** Unlike GCP, AWS credentials are exported as environment variables, not activated via a CLI command. They persist for the duration of the shell session.
+
+## Verify (Smoke Test)
+
+After activating credentials, run this lightweight check to confirm they work:
+
+```bash
+aws sts get-caller-identity
+```
+
+If this fails, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the IAM user.
 
 ## User Management
 
