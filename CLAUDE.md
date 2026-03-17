@@ -8,6 +8,7 @@ This is a Claude Code skill repository — it contains no executable source code
 .
 ├── README.md              # Installation instructions and project overview
 ├── SKILL.md               # Main skill definition (frontmatter + workflows)
+├── install.sh             # One-line installer script
 ├── references/
 │   ├── gcp.md             # GCP-specific commands and API reference
 │   ├── aws.md             # AWS-specific commands and API reference

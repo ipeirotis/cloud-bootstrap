@@ -120,14 +120,15 @@ Using the bootstrap token and provider-specific commands from the reference file
      -pass stdin \
      -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
    ```
-6. Save shared config:
+6. Save shared config (include `created_at` for credential age tracking):
    ```bash
    cat > .cloud-config.json << EOF
    {
      "provider": "<gcp|aws|azure>",
      "project_id": "<project/account/subscription identifier>",
      "service_account": "<service account email or ARN or client ID>",
-     "roles": ["<role1>", "<role2>"]
+     "roles": ["<role1>", "<role2>"],
+     "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    }
    EOF
    ```
@@ -145,13 +146,14 @@ Using the bootstrap token and provider-specific commands from the reference file
 
 ### Step 6: Set Up SessionStart Hook
 
-Create a SessionStart hook so the provider's CLI is automatically installed at the start of every Claude Code session. Follow the "SessionStart Hook" instructions in the provider's reference file.
+Create a SessionStart hook that automatically installs the provider CLI **and** authenticates at the start of every Claude Code session. Follow the "SessionStart Hook" instructions in the provider's reference file.
 
-- If `.claude/settings.json` does not exist, create it with the hook configuration from the reference.
-- If `.claude/settings.json` already exists, merge the new `SessionStart` hook into the existing `hooks` object. Do not overwrite existing hooks.
-- Commit `.claude/settings.json` along with the other files.
+1. Create `.claude/hooks/cloud-auth.sh` with the script from the provider reference. Make it executable: `chmod +x .claude/hooks/cloud-auth.sh`
+2. If `.claude/settings.json` does not exist, create it with the hook configuration from the reference.
+3. If `.claude/settings.json` already exists, merge the new `SessionStart` hook into the existing `hooks` object. Do not overwrite existing hooks.
+4. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` along with the other files.
 
-This ensures that future sessions (including for new team members) have the CLI available without manual installation.
+This ensures that future sessions start with the CLI installed and credentials already activated — no manual authentication needed.
 
 ### Step 7: Update CLAUDE.md
 
@@ -230,24 +232,31 @@ The bootstrap token is now spent. The user can now authenticate in future sessio
 
 ## Authenticate (Subsequent Sessions)
 
-Run this every time you need cloud access and are not yet authenticated:
+Run this every time you need cloud access and are not yet authenticated. The SessionStart hook normally handles this automatically, but this flow serves as a fallback.
 
 1. Read `.cloud-config.json` to determine the provider.
-2. Ensure the provider's CLI is installed by running the installation script from the corresponding reference file. This is a safety net in case the SessionStart hook hasn't run yet.
-3. Get the current user's email:
+2. **Check credential age:** If `created_at` exists in `.cloud-config.json`, calculate how old the credentials are. If older than **180 days**, warn the user:
+   ```
+   Your cloud credentials were created <N> days ago. Consider rotating
+   them for security. See the "Credential Rotation" section below.
+   ```
+   This is a warning only — do not block authentication.
+3. Ensure the provider's CLI is installed by running the installation script from the corresponding reference file. This is a safety net in case the SessionStart hook hasn't run yet.
+4. Get the current user's email:
    ```bash
    USER_EMAIL=$(git config user.email)
    ```
-4. Read the corresponding provider reference file in this skill's directory.
-5. Resolve the encryption key.
-6. Decrypt the user's credentials:
+5. Read the corresponding provider reference file in this skill's directory.
+6. Resolve the encryption key.
+7. Decrypt the user's credentials:
    ```bash
    echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
      -in ".cloud-credentials.${USER_EMAIL}.enc" -out /tmp/credentials.json
    ```
-7. Activate using the provider-specific commands from the reference file.
-8. **Delete `/tmp/credentials.json` immediately after activation.**
+8. Activate using the provider-specific commands from the reference file.
+9. **Delete `/tmp/credentials.json` immediately after activation.**
+10. **Verify credentials work** by running the smoke test command from the provider reference file (see "Verify (Smoke Test)" section). If the smoke test fails, inform the user that credentials may be expired or revoked and suggest re-running setup.
 
 ---
 
@@ -281,6 +290,114 @@ When cloud credentials are active, periodically consider whether cloud services 
 - **Growing datasets:** If data is being appended or collected across sessions via CSVs or flat files, suggest migrating to a managed database.
 
 Frame suggestions as questions, not directives: "Would it help if I moved this dataset to BigQuery so we do not have to re-process it every session?" Let the user decide.
+
+---
+
+## Credential Rotation
+
+Use this when credentials need to be replaced (e.g., age warning, suspected compromise, policy requirement). This replaces the current user's encrypted key without affecting other team members.
+
+1. Read `.cloud-config.json` to determine the provider. Read the provider reference file.
+2. Ask the user for a bootstrap token (same as during setup).
+3. **Delete the old key on the provider side:**
+   - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's key, delete it.
+   - **AWS:** Delete the current access key: `aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id OLD_KEY_ID`
+   - **Azure:** Remove the current client secret (see "Secret Management" in azure.md).
+4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
+5. Re-encrypt with the user's passphrase:
+   ```bash
+   USER_EMAIL=$(git config user.email)
+   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+     -pass stdin \
+     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
+   rm -f credentials.json
+   ```
+6. Update `created_at` in `.cloud-config.json` to the current timestamp.
+7. Commit the updated `.cloud-credentials.<email>.enc` and `.cloud-config.json`.
+
+---
+
+## Multi-Provider Setup
+
+A repo may need access to multiple cloud providers (e.g., GCP for BigQuery and AWS for S3). This skill supports this with a few conventions:
+
+### Config Format
+
+When a second provider is added, convert `.cloud-config.json` from a single-provider object to a `providers` array:
+
+```json
+{
+  "providers": [
+    {
+      "provider": "gcp",
+      "project_id": "my-gcp-project",
+      "service_account": "claude-agent@my-gcp-project.iam.gserviceaccount.com",
+      "roles": ["roles/storage.objectAdmin"],
+      "created_at": "2025-03-15T10:00:00Z"
+    },
+    {
+      "provider": "aws",
+      "project_id": "123456789012",
+      "service_account": "claude-agents",
+      "roles": ["AmazonS3FullAccess"],
+      "created_at": "2025-03-16T14:00:00Z"
+    }
+  ]
+}
+```
+
+### Credential File Naming
+
+With multiple providers, include the provider in the filename:
+
+```
+.cloud-credentials.<provider>.<email>.enc
+```
+
+For example: `.cloud-credentials.gcp.alice@example.com.enc` and `.cloud-credentials.aws.alice@example.com.enc`.
+
+### Backward Compatibility
+
+If `.cloud-config.json` has a top-level `provider` field (single-provider format), treat it as-is — no migration needed until a second provider is added. When adding a second provider:
+
+1. Read the existing single-provider config.
+2. Rewrite `.cloud-config.json` to the `providers` array format.
+3. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc`.
+4. Update `.claude/hooks/cloud-auth.sh` to iterate over all providers.
+5. Commit all changes.
+
+### Authentication
+
+When the config uses the `providers` array format, authenticate **all** providers during the Authenticate flow (or in the SessionStart hook). Each provider uses its own credentials key env var, falling back to `CLOUD_CREDENTIALS_KEY`.
+
+---
+
+## Uninstall
+
+To completely remove cloud-bootstrap from a repo:
+
+1. **Remove encrypted credential files:**
+   ```bash
+   rm -f .cloud-credentials.*.enc
+   ```
+2. **Remove config:**
+   ```bash
+   rm -f .cloud-config.json
+   ```
+3. **Remove the SessionStart hook:**
+   - Delete `.claude/hooks/cloud-auth.sh`
+   - Remove the `SessionStart` entry from `.claude/settings.json` (or delete the file if the hook was the only content)
+4. **Clean up `.gitignore`:** Remove the `credentials.json` and `/tmp/credentials.json` lines.
+5. **Remove the `## Cloud Credentials` section from CLAUDE.md** (if present).
+6. **Revoke provider-side credentials:**
+   - **GCP:** Delete the service account or its keys
+   - **AWS:** Delete the IAM user(s) and group
+   - **Azure:** Delete the app registration or its client secrets
+
+   Ask the user for a bootstrap token to perform these provider-side deletions, or instruct them to do it manually via the cloud console.
+7. **Commit all changes.**
+
+**Important:** This does not remove the skill files from `.claude/skills/cloud-bootstrap/`. Those can be kept (no secrets) or removed separately.
 
 ---
 

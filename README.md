@@ -37,7 +37,13 @@ This means if you work with multiple providers across different repos, you can u
 
 ## Install
 
-Copy the skill into your repo:
+**One-liner** (from your repo root):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/install.sh | bash
+```
+
+**Manual install** (if you prefer to see each step):
 
 ```bash
 # From the repo root
@@ -59,7 +65,7 @@ git add .claude/skills/cloud-bootstrap
 git commit -m "Add cloud-bootstrap skill"
 ```
 
-Or just tell Claude Code on the Web:
+**Or** just tell Claude Code on the Web:
 
 > "Clone the cloud-bootstrap skill from https://github.com/ipeirotis/cloud-bootstrap into `.claude/skills/cloud-bootstrap/` in this repo and commit it."
 
@@ -83,8 +89,12 @@ Or just tell Claude Code on the Web:
 |------|---------|------------|
 | `.cloud-credentials.<email>.enc` | Encrypted key, one per team member | Yes |
 | `.cloud-config.json` | Provider, project ID, roles (shared) | Yes |
+| `.claude/hooks/cloud-auth.sh` | SessionStart hook: installs CLI + authenticates | Yes |
+| `.claude/settings.json` | Hook configuration | Yes |
 | `CLAUDE.md` (Cloud Credentials section) | Human/agent-readable auth docs | Yes |
 | `credentials.json` | **Never** (plaintext key) | `.gitignore`d |
+
+**Multi-provider repos:** When using multiple providers, credential files are named `.cloud-credentials.<provider>.<email>.enc` and `.cloud-config.json` uses a `providers` array format. See SKILL.md for details.
 
 ## Security Model
 
