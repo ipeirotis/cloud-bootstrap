@@ -3,6 +3,12 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-03-17
+
+### Fixed
+- install.sh and update.sh now download workflow files and VERSION file
+- Version detection prefers VERSION file over SKILL.md frontmatter parsing
+
 ## [1.2.0] - 2026-03-17
 
 ### Changed

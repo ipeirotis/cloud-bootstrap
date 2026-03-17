@@ -15,7 +15,9 @@ fi
 
 # Determine installed version
 INSTALLED_VERSION=""
-if [ -f "$DEST/SKILL.md" ]; then
+if [ -f "$DEST/VERSION" ]; then
+  INSTALLED_VERSION=$(tr -d '[:space:]' < "$DEST/VERSION")
+elif [ -f "$DEST/SKILL.md" ]; then
   INSTALLED_VERSION=$(grep -m1 '^version:' "$DEST/SKILL.md" 2>/dev/null | awk '{print $2}')
 fi
 
@@ -75,9 +77,24 @@ fi
 
 # Perform update
 echo "Updating..."
-mkdir -p "$DEST/references"
+mkdir -p "$DEST/references" "$DEST/workflows"
 
-for FILE in SKILL.md references/gcp.md references/aws.md references/azure.md; do
+FILES="
+  SKILL.md
+  VERSION
+  references/gcp.md
+  references/aws.md
+  references/azure.md
+  workflows/first-time-setup.md
+  workflows/add-team-member.md
+  workflows/authenticate.md
+  workflows/credential-rotation.md
+  workflows/permission-escalation.md
+  workflows/multi-provider.md
+  workflows/uninstall.md
+"
+
+for FILE in $FILES; do
   curl -sSL "$REPO_URL/$FILE" -o "$DEST/$FILE"
 done
 
