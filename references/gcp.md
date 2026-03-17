@@ -23,9 +23,9 @@ gcloud auth print-access-token
 
 This produces a token valid for ~1 hour.
 
-## Sandbox Setup
+## CLI Installation
 
-The Claude Code on the Web sandbox may not have `gcloud` pre-installed. If `gcloud` is not available, install it before activating credentials:
+The Claude Code on the Web sandbox does not have `gcloud` pre-installed. Use this script to install it:
 
 ```bash
 if ! command -v gcloud &> /dev/null; then
@@ -33,6 +33,31 @@ if ! command -v gcloud &> /dev/null; then
   export PATH="/home/user/google-cloud-sdk/bin:$PATH"
 fi
 ```
+
+### SessionStart Hook
+
+After setup completes, create a SessionStart hook so `gcloud` is installed automatically at the start of every session. Write this to `.claude/settings.json` (create the file and directories if needed):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if ! command -v gcloud &> /dev/null; then curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user && export PATH=\"/home/user/google-cloud-sdk/bin:$PATH\"; fi",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object.
 
 ## API Base
 

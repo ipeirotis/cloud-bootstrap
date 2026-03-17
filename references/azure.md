@@ -12,6 +12,41 @@ The user needs **Application Administrator** (or **Cloud Application Administrat
 
 Azure allows **unlimited client secrets per app registration**. Each team member gets their own client secret for the same application/service principal. No practical team size limit.
 
+## CLI Installation
+
+The Claude Code on the Web sandbox may not have `az` pre-installed. Use this script to install it:
+
+```bash
+if ! command -v az &> /dev/null; then
+  curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash
+fi
+```
+
+### SessionStart Hook
+
+After setup completes, create a SessionStart hook so `az` is installed automatically at the start of every session. Write this to `.claude/settings.json` (create the file and directories if needed):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if ! command -v az &> /dev/null; then curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; fi",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object.
+
 ## Bootstrap Token Command
 
 Tell the user to run locally:

@@ -21,6 +21,45 @@ AWS allows only **2 access keys per IAM user**, which is too few for team sharin
 
 Each team member gets their own IAM user and access key, but all users inherit the same permissions from the group. The `.cloud-config.json` `service_account` field stores the group name.
 
+## CLI Installation
+
+The Claude Code on the Web sandbox may not have `aws` pre-installed. Use this script to install it:
+
+```bash
+if ! command -v aws &> /dev/null; then
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
+  export PATH="/home/user/bin:$PATH"
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+fi
+```
+
+### SessionStart Hook
+
+After setup completes, create a SessionStart hook so `aws` is installed automatically at the start of every session. Write this to `.claude/settings.json` (create the file and directories if needed):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if ! command -v aws &> /dev/null; then curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin && export PATH=/home/user/bin:$PATH && rm -rf /tmp/awscliv2.zip /tmp/aws; fi",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `.claude/settings.json` already exists, merge the `SessionStart` hook into the existing `hooks` object.
+
 ## Bootstrap Token Command
 
 Tell the user to run locally:

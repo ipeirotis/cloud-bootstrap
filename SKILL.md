@@ -143,7 +143,17 @@ Using the bootstrap token and provider-specific commands from the reference file
    ```
 9. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update.
 
-### Step 6: Update CLAUDE.md
+### Step 6: Set Up SessionStart Hook
+
+Create a SessionStart hook so the provider's CLI is automatically installed at the start of every Claude Code session. Follow the "SessionStart Hook" instructions in the provider's reference file.
+
+- If `.claude/settings.json` does not exist, create it with the hook configuration from the reference.
+- If `.claude/settings.json` already exists, merge the new `SessionStart` hook into the existing `hooks` object. Do not overwrite existing hooks.
+- Commit `.claude/settings.json` along with the other files.
+
+This ensures that future sessions (including for new team members) have the CLI available without manual installation.
+
+### Step 7: Update CLAUDE.md
 
 Append a `## Cloud Credentials` section to CLAUDE.md (create the file if it doesn't exist) documenting:
 
@@ -155,7 +165,7 @@ Append a `## Cloud Credentials` section to CLAUDE.md (create the file if it does
 - How new team members can join (the agent handles this via the **Add Team Member** flow)
 - How to escalate permissions
 
-### Step 7: Done
+### Step 8: Done
 
 The bootstrap token is now spent. Do not store it anywhere.
 
@@ -208,7 +218,11 @@ Using the bootstrap token and provider-specific commands:
    ```
 5. Commit the new `.cloud-credentials.<email>.enc` file.
 
-### Step 4: Done
+### Step 4: Ensure SessionStart Hook Exists
+
+Check if `.claude/settings.json` already contains a SessionStart hook for the provider's CLI. If not, add one following the "SessionStart Hook" instructions in the provider's reference file. Commit `.claude/settings.json` if it was created or modified.
+
+### Step 5: Done
 
 The bootstrap token is now spent. The user can now authenticate in future sessions using their own passphrase.
 
@@ -218,21 +232,22 @@ The bootstrap token is now spent. The user can now authenticate in future sessio
 
 Run this every time you need cloud access and are not yet authenticated:
 
-1. Get the current user's email:
+1. Read `.cloud-config.json` to determine the provider.
+2. Ensure the provider's CLI is installed by running the installation script from the corresponding reference file. This is a safety net in case the SessionStart hook hasn't run yet.
+3. Get the current user's email:
    ```bash
    USER_EMAIL=$(git config user.email)
    ```
-2. Read `.cloud-config.json` to determine the provider.
-3. Read the corresponding provider reference file in this skill's directory.
-4. Resolve the encryption key.
-5. Decrypt the user's credentials:
+4. Read the corresponding provider reference file in this skill's directory.
+5. Resolve the encryption key.
+6. Decrypt the user's credentials:
    ```bash
    echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
      -in ".cloud-credentials.${USER_EMAIL}.enc" -out /tmp/credentials.json
    ```
-6. Activate using the provider-specific commands from the reference file.
-7. **Delete `/tmp/credentials.json` immediately after activation.**
+7. Activate using the provider-specific commands from the reference file.
+8. **Delete `/tmp/credentials.json` immediately after activation.**
 
 ---
 
