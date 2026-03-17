@@ -1,7 +1,20 @@
 ---
 name: cloud-bootstrap
-version: 1.1.0
-description: Bootstrap and manage cloud service account credentials (GCP, AWS, Azure) for a repo used in Claude Code on the Web. Use this skill whenever the user mentions GCP, Google Cloud, AWS, Amazon Web Services, Azure, service accounts, cloud credentials, IAM, or wants to set up cloud infrastructure for a project. Also trigger when you detect .cloud-credentials.*.enc or .cloud-config.json in the repo, or when a cloud API call fails with authentication or permission errors. This skill handles first-time setup, adding new team members, and subsequent session authentication. Even if the user just says "deploy to Lambda" or "set up a Cloud Run service" or "create an Azure Function", use this skill first to ensure cloud auth is in place.
+version: 1.2.0
+description: >-
+  Manage encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
+  repo for Claude Code on the Web.
+
+  TRIGGER when the user explicitly asks to set up, rotate, or fix cloud
+  credentials or service accounts — or when you detect .cloud-config.json or
+  .cloud-credentials.*.enc files in the repo — or when a cloud CLI command
+  fails with an authentication/permission error (401, 403, "not authenticated",
+  "access denied").
+
+  DO NOT TRIGGER for general cloud questions ("what is a VPC?"), SDK usage
+  ("how do I call the S3 API in Python?"), or cloud tasks where credentials
+  are already working. Only invoke this skill when credential setup,
+  encryption, decryption, rotation, or repair is actually needed.
 ---
 
 # Cloud Bootstrap

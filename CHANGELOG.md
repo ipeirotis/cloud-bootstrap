@@ -3,6 +3,12 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-03-17
+
+### Changed
+- Narrowed SKILL.md trigger description to avoid false positives on general cloud questions or SDK usage
+- Added explicit TRIGGER / DO NOT TRIGGER guidance in frontmatter
+
 ## [1.1.0] - 2026-03-17
 
 ### Changed
