@@ -3,6 +3,11 @@
 # Usage: curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/install.sh | bash
 set -e
 
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo "ERROR: Not inside a git repository. Run this from your repo root." >&2
+  exit 1
+fi
+
 BASE_URL="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main"
 DEST=".claude/skills/cloud-bootstrap"
 

@@ -188,7 +188,7 @@ After decrypting credentials to `/tmp/credentials.json`:
 
 ```bash
 gcloud auth activate-service-account --key-file=/tmp/credentials.json
-gcloud config set project $(jq -r .project_id .cloud-config.json)
+gcloud config set project "$(jq -r .project_id .cloud-config.json)"
 rm -f /tmp/credentials.json
 ```
 
@@ -197,7 +197,7 @@ rm -f /tmp/credentials.json
 After activating credentials, run this lightweight check to confirm they work:
 
 ```bash
-gcloud projects describe $(jq -r .project_id .cloud-config.json) --format="value(projectId)"
+gcloud projects describe "$(jq -r .project_id .cloud-config.json)" --format="value(projectId)"
 ```
 
 If this fails with a permission error, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the service account.

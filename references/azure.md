@@ -176,7 +176,7 @@ ROLE_DEFINITION_ID=$(curl -s "https://management.azure.com/subscriptions/$SUBSCR
   -H "Authorization: Bearer $TOKEN" | jq -r '.value[0].id')
 
 curl -X PUT \
-  "https://management.azure.com/$ROLE_DEFINITION_ID/providers/Microsoft.Authorization/roleAssignments/$(uuidgen)?api-version=2022-04-01" \
+  "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments/$(uuidgen)?api-version=2022-04-01" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
@@ -249,11 +249,11 @@ After decrypting credentials to `/tmp/credentials.json`:
 
 ```bash
 az login --service-principal \
-  --username $(jq -r .appId /tmp/credentials.json) \
-  --password $(jq -r .password /tmp/credentials.json) \
-  --tenant $(jq -r .tenant /tmp/credentials.json)
+  --username "$(jq -r .appId /tmp/credentials.json)" \
+  --password "$(jq -r .password /tmp/credentials.json)" \
+  --tenant "$(jq -r .tenant /tmp/credentials.json)"
 
-az account set --subscription $(jq -r .project_id .cloud-config.json)
+az account set --subscription "$(jq -r .project_id .cloud-config.json)"
 
 rm -f /tmp/credentials.json
 ```
