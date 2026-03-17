@@ -1,6 +1,6 @@
 ---
 name: cloud-bootstrap
-version: 1.2.1
+version: 1.2.2
 description: >-
   Manage encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
   repo for Claude Code on the Web.

@@ -3,6 +3,13 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-03-17
+
+### Fixed
+- README manual install now includes all workflow files and VERSION
+- update.sh changelog parser uses portable awk (works on macOS/BSD)
+- update.sh error message no longer has a broken URL substitution
+
 ## [1.2.1] - 2026-03-17
 
 ### Fixed

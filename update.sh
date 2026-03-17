@@ -24,7 +24,7 @@ fi
 if [ -z "$INSTALLED_VERSION" ]; then
   echo "cloud-bootstrap is not installed or has no version info."
   echo "Run the installer instead:"
-  echo "  curl -sSL ${REPO_URL/raw.githubusercontent.com\/ipeirotis\/cloud-bootstrap\/main/raw.githubusercontent.com\/ipeirotis\/cloud-bootstrap\/main}/install.sh | bash"
+  echo "  curl -sSL $REPO_URL/install.sh | bash"
   exit 1
 fi
 
@@ -54,8 +54,10 @@ CHANGELOG=$(curl -sSL "$REPO_URL/CHANGELOG.md")
 echo "$CHANGELOG" | awk -v installed="$INSTALLED_VERSION" '
   /^## \[/ {
     # Extract version from heading like "## [1.2.0] - 2026-04-01"
-    match($0, /\[([0-9]+\.[0-9]+\.[0-9]+)\]/, arr)
-    if (arr[1] == installed) { found_installed = 1; next }
+    ver = $0
+    gsub(/.*\[/, "", ver)
+    gsub(/\].*/, "", ver)
+    if (ver == installed) { found_installed = 1; next }
     if (!found_installed) { print; next }
   }
   !found_installed { print }

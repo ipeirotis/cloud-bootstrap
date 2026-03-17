@@ -47,21 +47,22 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/insta
 
 ```bash
 # From the repo root
-mkdir -p .claude/skills/cloud-bootstrap/references
+BASE=https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main
+DEST=.claude/skills/cloud-bootstrap
 
-curl -o .claude/skills/cloud-bootstrap/SKILL.md \
-  https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/SKILL.md
+mkdir -p "$DEST/references" "$DEST/workflows"
 
-curl -o .claude/skills/cloud-bootstrap/references/gcp.md \
-  https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/references/gcp.md
+for FILE in \
+  SKILL.md VERSION \
+  references/gcp.md references/aws.md references/azure.md \
+  workflows/first-time-setup.md workflows/add-team-member.md \
+  workflows/authenticate.md workflows/credential-rotation.md \
+  workflows/permission-escalation.md workflows/multi-provider.md \
+  workflows/uninstall.md; do
+  curl -sSL "$BASE/$FILE" -o "$DEST/$FILE"
+done
 
-curl -o .claude/skills/cloud-bootstrap/references/aws.md \
-  https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/references/aws.md
-
-curl -o .claude/skills/cloud-bootstrap/references/azure.md \
-  https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/references/azure.md
-
-git add .claude/skills/cloud-bootstrap
+git add "$DEST"
 git commit -m "Add cloud-bootstrap skill"
 ```
 
@@ -82,7 +83,7 @@ This will:
 2. Display the changelog entries you'd be getting
 3. Ask for confirmation before updating
 
-You can also check your installed version at any time by looking at the `version:` field in `.claude/skills/cloud-bootstrap/SKILL.md`.
+You can also check your installed version at any time: `cat .claude/skills/cloud-bootstrap/VERSION`.
 
 ## Prerequisites
 
