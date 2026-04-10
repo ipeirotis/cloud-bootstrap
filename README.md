@@ -1,6 +1,43 @@
 # cloud-bootstrap
 
-A skill for [Claude Code on the Web](https://claude.com/product/claude-code) that bootstraps cloud provider credentials (GCP, AWS, Azure) and stores them encrypted in your repo.
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Claude Skill](https://img.shields.io/badge/Claude_Code-Skill-blueviolet.svg)](https://code.claude.com/docs/en/skills)
+[![Providers](https://img.shields.io/badge/Providers-GCP_|_AWS_|_Azure-orange.svg)](#supported-providers)
+
+**Encrypted cloud credentials that survive Claude Code sessions — set up once, authenticate forever.**
+
+A skill for [Claude Code on the Web](https://claude.com/product/claude-code) that bootstraps cloud provider credentials (GCP, AWS, Azure) and stores them encrypted in your repo. One install, and every future session auto-authenticates in seconds.
+
+---
+
+## Features at a Glance
+
+- **Zero-touch session auth** — SessionStart hook decrypts and authenticates automatically, every session
+- **Multi-provider** — GCP, AWS, and Azure in the same repo, each with independent credentials
+- **Multi-team** — Each team member has their own encrypted key and passphrase, no secrets shared
+- **AES-256-CBC encryption** — Credentials are encrypted with OpenSSL; only the passphrase stays outside the repo
+- **Automatic key rotation warnings** — Flags credentials older than 180 days
+- **Minimal IAM footprint** — Proposes least-privilege roles, never escalates on its own
+- **7 built-in workflows** — Setup, onboarding, authentication, rotation, escalation, multi-provider, and uninstall
+- **One-line install** — `curl | bash` and you're done
+
+---
+
+## How It Compares
+
+| Approach | Persistent across sessions? | Works in Claude Code Web? | No external service needed? | Per-user encryption? |
+|---|---|---|---|---|
+| **cloud-bootstrap** | Yes | Yes | Yes | Yes |
+| GCP Secret Manager | Yes | Needs API access first | No | No |
+| AWS Secrets Manager | Yes | Needs API access first | No | No |
+| HashiCorp Vault | Yes | No (requires server) | No | Configurable |
+| `.env` files | No (wiped each session) | Partially | Yes | No |
+| Paste token each session | No | Yes | Yes | N/A |
+
+cloud-bootstrap solves the chicken-and-egg problem: you need credentials to access a secret manager, but you need the secret manager to store credentials.
+
+---
 
 ## The Problem
 
@@ -34,6 +71,44 @@ Each person's encrypted credentials are stored as `.cloud-credentials.<git-email
 The only secret not in the repo is the encryption passphrase, which you set as an environment variable in Claude Code on the Web. You can use a provider-specific variable (`GCP_CREDENTIALS_KEY`, `AWS_CREDENTIALS_KEY`, `AZURE_CREDENTIALS_KEY`) or a universal one (`CLOUD_CREDENTIALS_KEY`). The skill checks the provider-specific variable first and falls back to the universal one.
 
 This means if you work with multiple providers across different repos, you can use distinct passphrases per provider. If you only use one provider, just set `CLOUD_CREDENTIALS_KEY` and forget about it.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Your Repository                          │
+│                                                             │
+│  .cloud-config.json          ← provider, project, roles    │
+│  .cloud-credentials.*.enc   ← AES-256-CBC encrypted keys   │
+│  .claude/hooks/cloud-auth.sh ← SessionStart auto-auth      │
+│  .claude/skills/cloud-bootstrap/SKILL.md ← this skill      │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                    Each Session                              │
+│                                                             │
+│  1. SessionStart hook fires                                 │
+│  2. Decrypts credentials using env var passphrase           │
+│  3. Activates cloud CLI (gcloud/aws/az)                     │
+│  4. Deletes plaintext key immediately                       │
+│  5. Cloud access ready — no human intervention              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+```bash
+# 1. Install the skill (from your repo root)
+curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/install.sh | bash
+
+# 2. Set your encryption passphrase in Claude Code on the Web
+#    (Settings → Environment Variables)
+#    CLOUD_CREDENTIALS_KEY = <your-secret-passphrase>
+
+# 3. Tell Claude:
+#    "Set up GCP credentials for project my-project-id"
+
+# That's it. Every future session authenticates automatically.
+```
 
 ## Install
 
@@ -121,6 +196,16 @@ You can also check your installed version at any time: `cat .claude/skills/cloud
 - Bootstrap tokens expire in ~1 hour
 - Encryption passphrases never enter the repo
 - Revoking a team member's access: delete their `.cloud-credentials.<email>.enc` file and remove their key/user from the cloud provider
+
+## Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| "No credentials key found" | Passphrase env var not set | Set `CLOUD_CREDENTIALS_KEY` in Claude Code Web settings |
+| Decryption fails silently | Wrong passphrase or corrupted `.enc` file | Re-run setup with the correct passphrase |
+| 403 after authentication | Service account missing a role | Ask your admin to grant the needed role (skill will suggest which one) |
+| CLI not found after hook runs | Install failed or PATH issue | Re-open session; hook retries install on next start |
+| Credential age warning | Key older than 180 days | Run credential rotation workflow |
 
 ## License
 
