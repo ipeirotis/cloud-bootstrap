@@ -67,6 +67,7 @@ Using the bootstrap token and provider-specific commands from the reference file
      "project_id": "<project/account/subscription identifier>",
      "service_account": "<service account email or ARN or client ID>",
      "tenant": "<Azure tenant ID, omit for GCP/AWS>",
+     "region": "<AWS region, omit for GCP/Azure>",
      "roles": ["<role1>", "<role2>"],
      "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    }

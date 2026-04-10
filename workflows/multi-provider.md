@@ -71,11 +71,11 @@ if [ ! -f "$CONFIG" ]; then exit 0; fi
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 if [ -z "$USER_EMAIL" ]; then exit 0; fi
 
-PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null)
+PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || exit 0
 if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then exit 0; fi
 
 for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
-  PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG")
+  PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG" 2>/dev/null) || continue
   ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
   if [ ! -f "$ENC_FILE" ]; then continue; fi
 
@@ -87,31 +87,57 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   esac
   if [ -z "$KEY" ]; then continue; fi
 
-  echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-    -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || continue
+  # Decrypt with restrictive permissions
+  if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+    -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
+    echo "WARNING: Failed to decrypt $PROVIDER credentials — check key or .enc file integrity."
+    rm -f /tmp/credentials.json
+    continue
+  fi
 
   # Activate using provider-specific commands (install CLI + authenticate)
-  # See each provider's reference file for the full activation commands
+  # Each provider block is guarded so one failure doesn't block others
   case "$PROVIDER" in
     gcp)
       if ! command -v gcloud &>/dev/null; then
-        curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/home/user
+        for dir in /home/user/google-cloud-sdk/bin /usr/lib/google-cloud-sdk/bin /usr/local/google-cloud-sdk/bin; do
+          if [ -x "$dir/gcloud" ]; then export PATH="$dir:$PATH"; break; fi
+        done
+      fi
+      if ! command -v gcloud &>/dev/null; then
+        INSTALLER=$(curl -sSL https://sdk.cloud.google.com 2>/dev/null) || true
+        if [ -z "$INSTALLER" ] || ! echo "$INSTALLER" | bash -s -- --disable-prompts --install-dir=/home/user; then
+          echo "WARNING: gcloud SDK install failed — skipping GCP auth."
+          rm -f /tmp/credentials.json; continue
+        fi
         export PATH="/home/user/google-cloud-sdk/bin:$PATH"
       fi
-      gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null
-      gcloud config set project "$(jq -r ".providers[$i].project_id" "$CONFIG")" 2>/dev/null
+      if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
+        echo "WARNING: gcloud auth failed — skipping GCP."
+        rm -f /tmp/credentials.json; continue
+      fi
+      gcloud config set project "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null || true
       ;;
     aws)
       if ! command -v aws &>/dev/null; then
-        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-        unzip -q /tmp/awscliv2.zip -d /tmp
-        /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
-        export PATH="/home/user/bin:$PATH"
+        for dir in /home/user/bin /usr/local/bin /home/user/aws-cli/v2/current/bin; do
+          if [ -x "$dir/aws" ]; then export PATH="$dir:$PATH"; break; fi
+        done
+      fi
+      if ! command -v aws &>/dev/null; then
+        if curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip 2>/dev/null && \
+           unzip -q /tmp/awscliv2.zip -d /tmp && \
+           /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin; then
+          export PATH="/home/user/bin:$PATH"
+        else
+          echo "WARNING: AWS CLI install failed — skipping AWS auth."
+          rm -rf /tmp/awscliv2.zip /tmp/aws /tmp/credentials.json; continue
+        fi
         rm -rf /tmp/awscliv2.zip /tmp/aws
       fi
       export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
       export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
-      export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
+      export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
       if [ -n "$CLAUDE_ENV_FILE" ]; then
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
@@ -120,13 +146,24 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       ;;
     azure)
       if ! command -v az &>/dev/null; then
-        curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        for dir in /usr/bin /usr/local/bin /home/user/bin; do
+          if [ -x "$dir/az" ]; then export PATH="$dir:$PATH"; break; fi
+        done
       fi
-      az login --service-principal \
+      if ! command -v az &>/dev/null; then
+        if ! curl -sSL https://aka.ms/InstallAzureCLIDeb | sudo bash; then
+          echo "WARNING: Azure CLI install failed — skipping Azure auth."
+          rm -f /tmp/credentials.json; continue
+        fi
+      fi
+      if ! az login --service-principal \
         --username "$(jq -r .appId /tmp/credentials.json)" \
         --password "$(jq -r .password /tmp/credentials.json)" \
-        --tenant "$(jq -r .tenant /tmp/credentials.json)" 2>/dev/null
-      az account set --subscription "$(jq -r ".providers[$i].project_id" "$CONFIG")" 2>/dev/null
+        --tenant "$(jq -r .tenant /tmp/credentials.json)" 2>/dev/null; then
+        echo "WARNING: az login failed — skipping Azure."
+        rm -f /tmp/credentials.json; continue
+      fi
+      az account set --subscription "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null || true
       ;;
   esac
 
