@@ -18,12 +18,19 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
 6. Resolve the encryption key and determine the credential file name:
    ```bash
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
-     PROVIDER=$(jq -r '.providers[] | select(.provider == "'$PROVIDER'") | .provider' .cloud-config.json)
-     ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
+     # Multi-provider: iterate providers to find credential files for this user
+     for PROVIDER in $(jq -r '.providers[].provider' .cloud-config.json); do
+       ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
+       if [ -f "$ENC_FILE" ]; then
+         # Resolve key and run steps 7-9 for this provider, then continue loop
+       fi
+     done
    else
+     PROVIDER=$(jq -r .provider .cloud-config.json)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
    ```
+   In multi-provider mode, repeat steps 7–9 for **each** provider that has a credential file for the current user.
 7. Decrypt the user's credentials with restrictive permissions and guaranteed cleanup:
    ```bash
    trap 'rm -f /tmp/credentials.json' EXIT
