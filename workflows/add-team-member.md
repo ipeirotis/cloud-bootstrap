@@ -36,6 +36,12 @@ Using the bootstrap token and provider-specific commands:
    ```bash
    USER_EMAIL=$(git config user.email)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
+     PROVIDER=$(jq -r .provider .cloud-config.json 2>/dev/null)
+     # If no top-level provider, determine from context (the provider being onboarded)
+     if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then
+       echo "ERROR: Could not determine provider for credential filename."
+       exit 1
+     fi
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
@@ -44,6 +50,7 @@ Using the bootstrap token and provider-specific commands:
      -pass stdin \
      -in credentials.json -out "$ENC_FILE"
    ```
+   **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json

@@ -13,8 +13,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```bash
    USER_EMAIL=$(git config user.email)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
+     # PROVIDER must already be set from step 1 (read from .cloud-config.json)
+     if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then
+       echo "ERROR: Could not determine provider for credential filename."
+       exit 1
+     fi
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else
+     PROVIDER=$(jq -r .provider .cloud-config.json 2>/dev/null)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
    echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
@@ -22,5 +28,6 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      -in credentials.json -out "$ENC_FILE"
    rm -f credentials.json
    ```
+   **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 6. Update `created_at` in `.cloud-config.json` to the current timestamp.
 7. Commit the updated encrypted credentials file and `.cloud-config.json`.
