@@ -36,10 +36,9 @@ Using the bootstrap token and provider-specific commands:
    ```bash
    USER_EMAIL=$(git config user.email)
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
-     PROVIDER=$(jq -r .provider .cloud-config.json 2>/dev/null)
-     # If no top-level provider, determine from context (the provider being onboarded)
+     # PROVIDER must already be set from Step 1 — validate but do not overwrite
      if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then
-       echo "ERROR: Could not determine provider for credential filename."
+       echo "ERROR: PROVIDER is not set — determine it from .cloud-config.json in Step 1."
        exit 1
      fi
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
