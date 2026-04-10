@@ -37,8 +37,9 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
      -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
-     echo "WARNING: Failed to decrypt credentials — check your credentials key or .enc file integrity."
-     exit 1
+     echo "WARNING: Failed to decrypt $PROVIDER credentials — check your credentials key or .enc file integrity."
+     # In multi-provider mode: continue to next provider. In single-provider mode: stop.
+     continue 2>/dev/null || exit 1
    fi
    ```
 8. Activate using the provider-specific commands from the reference file.
