@@ -1,6 +1,6 @@
 ---
 name: cloud-bootstrap
-version: 1.2.2
+version: 1.3.0
 description: >-
   Manage encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
   repo for Claude Code on the Web.
@@ -66,8 +66,21 @@ resolve_credentials_key() {
 Determine the current user's email, then:
 
 1. If `.cloud-config.json` does NOT exist → read `workflows/first-time-setup.md`
-2. If `.cloud-config.json` exists BUT `.cloud-credentials.<user-email>.enc` does NOT → read `workflows/add-team-member.md`
-3. If `.cloud-credentials.<user-email>.enc` exists → read `workflows/authenticate.md`
+2. If `.cloud-config.json` exists, check for the user's encrypted credentials file. The file may use **either** naming convention:
+   - Single-provider: `.cloud-credentials.<user-email>.enc`
+   - Multi-provider: `.cloud-credentials.<provider>.<user-email>.enc`
+
+   To detect multi-provider mode, check whether `.cloud-config.json` contains a `providers` array:
+   ```bash
+   if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
+     # Multi-provider: check for .cloud-credentials.<provider>.<email>.enc for each provider
+     PROVIDERS=$(jq -r '.providers[].provider' .cloud-config.json)
+   else
+     # Single-provider: check for .cloud-credentials.<email>.enc
+   fi
+   ```
+   If **no** matching credential file exists for the current user → read `workflows/add-team-member.md`
+3. If a matching credential file exists → read `workflows/authenticate.md`
 
 For other operations, read the corresponding workflow file in this skill's `workflows/` directory:
 - **Permission escalation** (403 / access denied errors) → `workflows/permission-escalation.md`

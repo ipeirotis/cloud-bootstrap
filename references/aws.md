@@ -27,10 +27,18 @@ The Claude Code on the Web sandbox may not have `aws` pre-installed. Use this sc
 
 ```bash
 if ! command -v aws &> /dev/null; then
-  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
-  export PATH="/home/user/bin:$PATH"
+  for dir in /home/user/bin /usr/local/bin /home/user/aws-cli/v2/current/bin; do
+    if [ -x "$dir/aws" ]; then export PATH="$dir:$PATH"; break; fi
+  done
+fi
+if ! command -v aws &> /dev/null; then
+  if curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip 2>/dev/null && \
+     unzip -q /tmp/awscliv2.zip -d /tmp && \
+     /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin; then
+    export PATH="/home/user/bin:$PATH"
+  else
+    echo "WARNING: AWS CLI install failed."
+  fi
   rm -rf /tmp/awscliv2.zip /tmp/aws
 fi
 ```
@@ -43,20 +51,11 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
-# --- Install aws CLI if missing ---
-if ! command -v aws &> /dev/null; then
-  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin
-  export PATH="/home/user/bin:$PATH"
-  rm -rf /tmp/awscliv2.zip /tmp/aws
-fi
-
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
-PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null)
+PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "aws" ]; then exit 0; fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
@@ -66,13 +65,36 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${AWS_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
-echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null || exit 0
+# --- Install aws CLI if missing ---
+if ! command -v aws &> /dev/null; then
+  for dir in /home/user/bin /usr/local/bin /home/user/aws-cli/v2/current/bin; do
+    if [ -x "$dir/aws" ]; then export PATH="$dir:$PATH"; break; fi
+  done
+fi
+if ! command -v aws &> /dev/null; then
+  if curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip 2>/dev/null && \
+     unzip -q /tmp/awscliv2.zip -d /tmp && \
+     /tmp/aws/install --install-dir /home/user/aws-cli --bin-dir /home/user/bin; then
+    export PATH="/home/user/bin:$PATH"
+  else
+    echo "WARNING: AWS CLI install failed — skipping AWS auth."
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+    exit 0
+  fi
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+fi
+
+# --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
+trap 'rm -f /tmp/credentials.json' EXIT
+if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
+  echo "WARNING: Failed to decrypt credentials — check AWS_CREDENTIALS_KEY or .enc file integrity."
+  exit 0
+fi
 
 export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
 export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
-export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
-rm -f /tmp/credentials.json
+export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
 
 # Persist env vars for the session via CLAUDE_ENV_FILE
 if [ -n "$CLAUDE_ENV_FILE" ]; then
@@ -164,15 +186,15 @@ aws iam create-access-key \
 Reformat `credentials.json` to a clean structure before encrypting:
 
 ```bash
-cat credentials.json | jq '{
+cat credentials.json | jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
-  region: "us-east-1"
+  region: $region
 }' > credentials_clean.json
 mv credentials_clean.json credentials.json
 ```
 
-Ask the user which AWS region to use if not obvious from the repo.
+**Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
 
 **For `.cloud-config.json`:** set `service_account` to `claude-agents` (the group name).
 
@@ -192,11 +214,12 @@ aws iam add-user-to-group \
 aws iam create-access-key \
   --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
 
-# Reformat
-cat credentials.json | jq '{
+# Reformat — read region from existing config
+AWS_REGION=$(jq -r '.region // "us-east-1"' .cloud-config.json 2>/dev/null)
+cat credentials.json | jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
-  region: "us-east-1"
+  region: $region
 }' > credentials_clean.json
 mv credentials_clean.json credentials.json
 ```

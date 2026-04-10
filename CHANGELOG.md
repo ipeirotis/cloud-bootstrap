@@ -3,6 +3,24 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-04-10
+
+### Fixed
+- Phase detection now recognizes multi-provider credential file naming (#6)
+- SessionStart hooks use `(umask 077 && openssl ...)` for restrictive file permissions (#4)
+- SessionStart hooks add `trap 'rm -f /tmp/credentials.json' EXIT` for guaranteed cleanup (#4)
+- Credential prechecks run before CLI installation to avoid unnecessary downloads (#5)
+- CLI installation and auth commands guarded with conditionals for graceful failure (#5)
+- jq command substitutions guarded with `|| exit 0` to handle missing jq or malformed config (#11)
+- GCP `curl|bash` install pipeline replaced with split download to detect failures (#12)
+- Hook templates check common CLI install paths before attempting downloads (#13)
+- Decryption failures now emit explicit warnings instead of failing silently (#14)
+- Azure reference uses separate ARM and Graph tokens for correct API scope (#9)
+- AWS reference no longer hardcodes us-east-1; region read from config or user input (#7)
+- Multi-provider hook uses per-provider error isolation so one failure doesn't block others (#8)
+- Authenticate workflow decryption hardened with umask and trap (#10)
+- Add-team-member, authenticate, and credential-rotation workflows support multi-provider credential naming (#15)
+
 ## [1.2.2] - 2026-03-17
 
 ### Fixed
