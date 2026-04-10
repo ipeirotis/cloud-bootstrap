@@ -1,25 +1,34 @@
 ---
 name: cloud-bootstrap
-version: 1.3.0
+version: 1.4.0
 description: >-
-  Manage encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
-  repo for Claude Code on the Web.
+  Manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored
+  directly in a repo so they persist across Claude Code sessions.
 
-  TRIGGER when the user explicitly asks to set up, rotate, or fix cloud
-  credentials or service accounts — or when you detect .cloud-config.json or
-  .cloud-credentials.*.enc files in the repo — or when a cloud CLI command
-  fails with an authentication/permission error (401, 403, "not authenticated",
-  "access denied").
+  TRIGGER when the user says any of these: "set up cloud credentials",
+  "configure cloud access", "connect to GCP/AWS/Azure", "bootstrap cloud",
+  "add cloud provider", "rotate credentials", "fix cloud auth", "my cloud
+  command failed", "set up a service account", "encrypt credentials",
+  "store credentials in the repo", "authenticate to the cloud", or
+  "add a team member to cloud access". Also trigger when you detect
+  .cloud-config.json or .cloud-credentials.*.enc files in the repo, or
+  when a cloud CLI command fails with an authentication or permission error
+  (401, 403, "not authenticated", "access denied", "could not refresh
+  access token", "InvalidIdentityToken", "AADSTS700024").
 
-  DO NOT TRIGGER for general cloud questions ("what is a VPC?"), SDK usage
-  ("how do I call the S3 API in Python?"), or cloud tasks where credentials
-  are already working. Only invoke this skill when credential setup,
-  encryption, decryption, rotation, or repair is actually needed.
+  DO NOT TRIGGER for general cloud questions ("what is a VPC?", "explain
+  IAM roles"), SDK or API usage ("how do I call the S3 API in Python?",
+  "write a Cloud Function"), Terraform or IaC questions, or cloud tasks
+  where credentials are already working and authenticated. Only invoke
+  this skill when credential setup, encryption, decryption, rotation, or
+  repair is actually needed.
 ---
 
 # Cloud Bootstrap
 
-Set up and manage cloud provider credentials stored encrypted in the repo. Designed for Claude Code on the Web, where the repo is the only persistent storage across sessions. Supports multiple team members, each with their own encrypted key file and passphrase.
+## Overview
+
+This skill manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored directly in a repository for Claude Code on the Web. When activated, it detects the current authentication state — whether this is a first-time setup, a new team member joining, or a returning session that needs re-authentication — and executes the appropriate workflow. It handles the full credential lifecycle: initial setup, team member onboarding, session authentication, key rotation, permission escalation, multi-provider configuration, and cleanup.
 
 **Requires:** An encryption passphrase in one of these environment variables (checked in order):
 - `GCP_CREDENTIALS_KEY`, `AWS_CREDENTIALS_KEY`, or `AZURE_CREDENTIALS_KEY` (provider-specific)
@@ -105,6 +114,67 @@ When cloud credentials are active, periodically consider whether cloud services 
 Frame suggestions as questions, not directives. Let the user decide.
 
 ---
+
+## Output Format
+
+When executing any workflow, follow these communication standards:
+
+- **Before each major step:** Tell the user what you are about to do and why, in one sentence.
+- **After each major step:** Confirm what happened. Show the command output if relevant.
+- **For errors:** State what failed, what the likely cause is, and what the user should do next. Do NOT guess or retry silently.
+- **For credential operations:** Always confirm the file name and path of any file created, encrypted, or deleted.
+- **Final summary:** After completing a workflow, provide a short checklist of what was done and what the user should verify.
+- **Do NOT** add unsolicited suggestions about cloud architecture, cost optimization, or alternative services during credential workflows. Stay focused on the credential task.
+- **Do NOT** output raw credentials, keys, or passphrases to the chat. If you need to show a file's contents for debugging, show only the first and last 4 characters.
+
+## Examples
+
+### Example 1: First-time setup (happy path)
+
+**User says:** "Set up GCP credentials for this project"
+
+**Expected behavior:**
+1. Check for `.cloud-config.json` — not found, so load `workflows/first-time-setup.md`
+2. Ask the user for: cloud provider (GCP confirmed), project ID, desired roles
+3. Propose minimum roles (e.g., `roles/storage.objectAdmin` instead of `roles/editor`)
+4. Ask the user to run `gcloud auth print-access-token` locally and paste the token
+5. Create the service account, generate a key, encrypt it, commit `.cloud-credentials.<email>.enc` and `.cloud-config.json`
+6. Confirm: "Setup complete. Encrypted credentials committed. Next session will authenticate automatically."
+
+### Example 2: Returning session (happy path)
+
+**User says:** "Deploy this Cloud Function" (but credentials are not yet active this session)
+
+**Expected behavior:**
+1. Detect `.cloud-config.json` and `.cloud-credentials.<email>.enc` exist
+2. Load `workflows/authenticate.md`
+3. Decrypt credentials, activate the CLI, verify with a smoke test
+4. Then proceed with the user's original request (deploying the function)
+
+### Example 3: Missing encryption key (edge case)
+
+**User says:** "Set up AWS access"
+
+**Expected behavior:**
+1. Check for `AWS_CREDENTIALS_KEY` and `CLOUD_CREDENTIALS_KEY` — both unset
+2. **Stop immediately.** Tell the user: "No encryption passphrase found. Please set `AWS_CREDENTIALS_KEY` or `CLOUD_CREDENTIALS_KEY` as an environment variable in Claude Code on the Web, then try again."
+3. Do NOT proceed with setup. Do NOT prompt the user to type a passphrase into the chat.
+
+### Example 4: Wrong skill activation (negative test)
+
+**User says:** "How do I create a VPC in AWS?"
+
+**Expected behavior:** Do NOT activate this skill. This is a general cloud question, not a credential management request. Let Claude answer normally.
+
+### Example 5: Permission error mid-task (edge case)
+
+**User says:** "Upload this file to GCS" → command fails with 403
+
+**Expected behavior:**
+1. Recognize this as a permission error, load `workflows/permission-escalation.md`
+2. Tell the user which role is likely needed (e.g., `roles/storage.objectAdmin`)
+3. Ask the user to grant the role via their admin console
+4. Do NOT attempt to modify IAM policies directly
 
 ## Rules
 

@@ -3,6 +3,26 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-04-10
+
+### Added
+- SKILL.md: Expanded YAML trigger description with 13+ explicit trigger phrases for reliable activation
+- SKILL.md: Added Overview section written for Claude's skill-matching system
+- SKILL.md: Added Output Format specification for consistent user communication
+- SKILL.md: Added 5 Examples covering happy paths, edge cases, and negative tests
+- SKILL.md: Added specific cloud error codes to trigger list (AADSTS700024, InvalidIdentityToken)
+- README: Added version, license, skill, and provider badges
+- README: Added "Features at a Glance" section with 8 key capabilities
+- README: Added comparison table vs. Secret Manager, Vault, .env, and manual paste
+- README: Added ASCII architecture diagram showing session auth flow
+- README: Added Quick Start section (3 steps to working cloud access)
+- README: Added Troubleshooting table for 5 common issues
+- README: Added tagline: "Encrypted cloud credentials that survive Claude Code sessions"
+
+### Changed
+- SKILL.md: Tightened DO NOT TRIGGER boundaries to include Terraform/IaC and SDK questions
+- SKILL.md: Proactive Suggestions section now scoped to avoid firing during credential workflows
+
 ## [1.3.0] - 2026-04-10
 
 ### Fixed
