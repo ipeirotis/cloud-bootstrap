@@ -202,11 +202,12 @@ curl -X POST \
 This command works for both first-time setup and adding new team members. Each call creates a new, independent key for the same service account.
 
 ```bash
-# Use the service account recorded at setup. The name is configurable (the
-# first-time workflow asks for naming preferences and stores the chosen identity
-# in .cloud-config.json), so do not hard-code claude-agent for add-team-member
-# or rotation. Fall back to the default only during first-time setup.
-SA_EMAIL="${SA_EMAIL:-$(jq -r '.service_account // empty' .cloud-config.json 2>/dev/null)}"
+# Resolve the project and service account from config (provider-aware: in
+# multi-provider repos these live inside the matching providers[] entry).
+# add-team-member/rotation reuse this snippet with no first-time vars in scope,
+# so PROJECT_ID must be resolved here too, not assumed.
+PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 
 curl -X POST \
@@ -223,7 +224,8 @@ List existing keys (useful if approaching the 10-key limit). Resolve the
 configured service account first (do not hard-code `claude-agent`):
 
 ```bash
-SA_EMAIL="${SA_EMAIL:-$(jq -r '.service_account // empty' .cloud-config.json 2>/dev/null)}"
+PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 curl -X GET \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
@@ -247,9 +249,15 @@ Google client libraries (which use Application Default Credentials, not the
 gcloud CLI auth store) can authenticate too:
 
 ```bash
+# Decrypt directly to the session ADC path so this snippet is self-contained
+# (don't assume SessionStart already left a file behind). KEY/ENC_FILE come
+# from the Authenticate workflow.
 ADC_KEY="/tmp/gcp-adc-credentials.json"   # decrypted here, never committed
+(umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
 gcloud auth activate-service-account --key-file="$ADC_KEY"
-gcloud config set project "$(jq -r .project_id .cloud-config.json)"
+# Provider-aware project: in multi-provider repos project_id is in providers[].
+gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end)' .cloud-config.json)"
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
 # If running outside the same shell, persist via $CLAUDE_ENV_FILE (see hook).
 ```

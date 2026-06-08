@@ -3,10 +3,24 @@
 Run this every time you need cloud access and are not yet authenticated. The SessionStart hook normally handles this automatically, but this flow serves as a fallback.
 
 1. Read `.cloud-config.json` to determine the provider.
-2. **Check credential age:** If `created_at` exists in `.cloud-config.json`, calculate how old the credentials are. If older than **180 days**, warn the user:
+2. **Check credential age (per credential file):** Age is tracked per `.enc`
+   file, not repo-wide, so one teammate rotating does not reset everyone's age.
+   For the current user's encrypted credential file(s) (`$ENC_FILE`, resolved in
+   step 6), derive age from the file's last git commit time, falling back to the
+   shared `created_at` only when git history is unavailable:
+   ```bash
+   COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
+   if [ -z "$COMMIT_TS" ]; then
+     COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' .cloud-config.json)" +%s 2>/dev/null)
+   fi
+   if [ -n "$COMMIT_TS" ]; then
+     AGE_DAYS=$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))
+   fi
    ```
-   Your cloud credentials were created <N> days ago. Consider rotating
-   them for security. See the "Credential Rotation" workflow.
+   If older than **180 days**, warn the user:
+   ```
+   Your <provider> credentials are <N> days old. Consider rotating them for
+   security. See the "Credential Rotation" workflow.
    ```
    This is a warning only — do not block authentication.
 3. Ensure the provider's CLI is installed by running the installation script from the corresponding reference file. This is a safety net in case the SessionStart hook hasn't run yet.
