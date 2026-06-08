@@ -187,19 +187,33 @@ If the tenant ID is not available, ask the user.
 Roles are assigned to the **service principal**, so they apply to all team members automatically. No per-user role assignment needed.
 
 ```bash
+# APP_ID is the service principal's appId. During first-time setup it comes from
+# the credentials you just created; in later sessions read it from config.
+APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
+[ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
+
 SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
-SP_OBJECT_ID=$(az ad sp show --id $APP_ID --query id -o tsv)
+SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
 az role assignment create \
-  --assignee-object-id $SP_OBJECT_ID \
+  --assignee-object-id "$SP_OBJECT_ID" \
   --assignee-principal-type ServicePrincipal \
   --role "ROLE_NAME" \
   --scope "/subscriptions/$SUBSCRIPTION_ID"
 ```
 
-Or via REST API (requires `$ARM_TOKEN`):
+Or via REST API (requires `$ARM_TOKEN` and `$GRAPH_TOKEN`):
 
 ```bash
+# Resolve the service principal's object id from its appId before assigning a
+# role. The role assignment's principalId must be this SP object id, not the
+# appId, or the assignment is created against an empty/incorrect principal.
+APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
+[ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
+SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
+SP_OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/servicePrincipals?\$filter=appId eq '$APP_ID'" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
+
 ROLE_DEFINITION_ID=$(curl -s "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions?api-version=2022-04-01&\$filter=roleName eq 'ROLE_NAME'" \
   -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id')
 
