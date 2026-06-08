@@ -202,8 +202,15 @@ curl -X POST \
 This command works for both first-time setup and adding new team members. Each call creates a new, independent key for the same service account.
 
 ```bash
+# Use the service account recorded at setup. The name is configurable (the
+# first-time workflow asks for naming preferences and stores the chosen identity
+# in .cloud-config.json), so do not hard-code claude-agent for add-team-member
+# or rotation. Fall back to the default only during first-time setup.
+SA_EMAIL="${SA_EMAIL:-$(jq -r '.service_account // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
+
 curl -X POST \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/claude-agent@$PROJECT_ID.iam.gserviceaccount.com/keys" \
+  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' \
@@ -212,11 +219,14 @@ curl -X POST \
 
 ## Key Management
 
-List existing keys (useful if approaching the 10-key limit):
+List existing keys (useful if approaching the 10-key limit). Resolve the
+configured service account first (do not hard-code `claude-agent`):
 
 ```bash
+SA_EMAIL="${SA_EMAIL:-$(jq -r '.service_account // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 curl -X GET \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/claude-agent@$PROJECT_ID.iam.gserviceaccount.com/keys" \
+  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -224,7 +234,7 @@ Delete a specific key (if a team member leaves or a key is compromised):
 
 ```bash
 curl -X DELETE \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/claude-agent@$PROJECT_ID.iam.gserviceaccount.com/keys/KEY_ID" \
+  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/KEY_ID" \
   -H "Authorization: Bearer $TOKEN"
 ```
 

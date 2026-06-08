@@ -220,8 +220,9 @@ aws iam add-user-to-group \
 aws iam create-access-key \
   --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
 
-# Reformat — read region from existing config
-AWS_REGION=$(jq -r '.region // "us-east-1"' .cloud-config.json 2>/dev/null)
+# Reformat — read region from existing config. In multi-provider mode the
+# region lives inside the matching providers[] entry, not at the top level.
+AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .region) else .region end) // "us-east-1"' .cloud-config.json 2>/dev/null)
 cat credentials.json | jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
