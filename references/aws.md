@@ -96,11 +96,17 @@ export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
 export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
 export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
 
-# Persist env vars for the session via CLAUDE_ENV_FILE
+# Persist env vars for the session via CLAUDE_ENV_FILE. Persist the aws CLI
+# bin dir too: if it was just installed under /home/user/bin, later session
+# shells would otherwise have valid AWS_* vars but still hit "aws: command
+# not found".
 if [ -n "$CLAUDE_ENV_FILE" ]; then
   echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
+  AWS_BIN="$(dirname "$(command -v aws)")"
+  grep -qxF "export PATH=\"$AWS_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "export PATH=\"$AWS_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
 fi
 
 echo "AWS credentials activated for $USER_EMAIL"

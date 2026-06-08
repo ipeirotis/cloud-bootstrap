@@ -117,6 +117,20 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         rm -f /tmp/credentials.json; continue
       fi
       gcloud config set project "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null || true
+      # Preserve a GCP-specific key + ADC for the session so Python Google
+      # client libraries (which read GOOGLE_APPLICATION_CREDENTIALS, not the
+      # gcloud CLI auth store) work. The shared cleanup below removes
+      # /tmp/credentials.json, so copy to a stable, private path first.
+      GCP_ADC_KEY="/tmp/gcp-adc-credentials.json"
+      (umask 077 && cp /tmp/credentials.json "$GCP_ADC_KEY")
+      export GOOGLE_APPLICATION_CREDENTIALS="$GCP_ADC_KEY"
+      if [ -n "$CLAUDE_ENV_FILE" ]; then
+        GCLOUD_BIN="$(dirname "$(command -v gcloud)")"
+        grep -qxF "export PATH=\"$GCLOUD_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+          echo "export PATH=\"$GCLOUD_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+        grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+          echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
+      fi
       ;;
     aws)
       if ! command -v aws &>/dev/null; then
@@ -142,6 +156,9 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
+        AWS_BIN="$(dirname "$(command -v aws)")"
+        grep -qxF "export PATH=\"$AWS_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+          echo "export PATH=\"$AWS_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
       fi
       ;;
     azure)

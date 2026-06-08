@@ -89,7 +89,14 @@ Determine the current user's email, then:
    fi
    ```
    If **no** matching credential file exists for the current user → read `workflows/add-team-member.md`
-3. If a matching credential file exists → read `workflows/authenticate.md`
+
+   In multi-provider mode, evaluate **each** provider independently: if the
+   current user is missing the credential file for *any* configured provider,
+   treat that provider as an add-team-member case (read
+   `workflows/add-team-member.md` for it) — even if files for other providers
+   already exist. Do not short-circuit to authenticate just because one match
+   was found, or the missing provider is silently skipped until a command fails.
+3. If a matching credential file exists for every configured provider → read `workflows/authenticate.md`
 
 For other operations, read the corresponding workflow file in this skill's `workflows/` directory:
 - **Permission escalation** (403 / access denied errors) → `workflows/permission-escalation.md`

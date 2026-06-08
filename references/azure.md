@@ -169,7 +169,16 @@ curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPasswo
   > secret.json
 
 # Step 4: Assemble credentials
-TENANT_ID=$(az account show --query tenantId -o tsv 2>/dev/null || echo "ASK_USER")
+# The tenant ID is required for every future `az login --tenant ...`. This REST
+# path is used precisely when `az` is unavailable, so do NOT persist a
+# placeholder: collect the real tenant ID from the user before writing
+# credentials.json, otherwise the encrypted credential will fail every session.
+TENANT_ID=$(az account show --query tenantId -o tsv 2>/dev/null || true)
+if [ -z "$TENANT_ID" ]; then
+  echo "ERROR: Tenant ID not available. Ask the user for their Azure tenant ID"
+  echo "       and set TENANT_ID before assembling credentials.json."
+  exit 1
+fi
 jq -n \
   --arg appId "$APP_ID" \
   --arg password "$(jq -r .secretText secret.json)" \
@@ -180,7 +189,7 @@ jq -n \
 rm -f app.json secret.json
 ```
 
-If the tenant ID is not available, ask the user.
+If the tenant ID is not available, stop and ask the user for it before writing `credentials.json` — never persist a placeholder.
 
 ## Grant Roles
 
