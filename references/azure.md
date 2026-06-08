@@ -318,7 +318,9 @@ az login --service-principal \
   --password "$(jq -r .password /tmp/credentials.json)" \
   --tenant "$(jq -r .tenant /tmp/credentials.json)"
 
-az account set --subscription "$(jq -r .project_id .cloud-config.json)"
+# Provider-aware subscription: in multi-provider repos the subscription id is in
+# the matching providers[] entry, not at top-level .project_id.
+az account set --subscription "$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end)' .cloud-config.json)"
 
 rm -f /tmp/credentials.json
 ```
