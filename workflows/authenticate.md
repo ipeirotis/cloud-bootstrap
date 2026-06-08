@@ -38,8 +38,14 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
      -pass stdin \
      -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
      echo "WARNING: Failed to decrypt $PROVIDER credentials — check your credentials key or .enc file integrity."
-     # In multi-provider mode: continue to next provider. In single-provider mode: stop.
-     continue 2>/dev/null || exit 1
+     # Multi-provider runs inside the for loop above (skip to next provider);
+     # single-provider is a flat script (stop). `continue` outside a loop is a
+     # no-op that returns success, so branch explicitly instead of relying on it.
+     if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
+       continue
+     else
+       exit 1
+     fi
    fi
    ```
 8. Activate using the provider-specific commands from the reference file.

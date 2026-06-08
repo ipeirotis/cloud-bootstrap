@@ -223,7 +223,13 @@ SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
 SP_OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/servicePrincipals?\$filter=appId eq '$APP_ID'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
 
-ROLE_DEFINITION_ID=$(curl -s "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions?api-version=2022-04-01&\$filter=roleName eq 'ROLE_NAME'" \
+# URL-encode the query: role names contain spaces (e.g. "Storage Blob Data
+# Contributor"), which curl rejects if substituted raw into the URL. Let curl
+# encode the params via -G/--data-urlencode.
+ROLE_DEFINITION_ID=$(curl -s -G \
+  "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions" \
+  --data-urlencode "api-version=2022-04-01" \
+  --data-urlencode "\$filter=roleName eq 'ROLE_NAME'" \
   -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id')
 
 curl -X PUT \
@@ -246,9 +252,12 @@ Prefer scoping roles to specific resource groups rather than the entire subscrip
 When a new team member joins, create a new client secret for the existing app. Read the `appId` from `.cloud-config.json` (stored as `service_account`).
 
 ```bash
-# Get the app's object ID from its appId (requires $GRAPH_TOKEN)
-APP_ID=$(jq -r .service_account .cloud-config.json)
-OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/applications?\$filter=appId eq '$APP_ID'" \
+# Get the app's object ID from its appId (requires $GRAPH_TOKEN). In
+# multi-provider mode the appId is stored as service_account inside the matching
+# providers[] entry, not at the top level.
+APP_ID=$(jq -r 'if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end' .cloud-config.json)
+OBJECT_ID=$(curl -s -G "https://graph.microsoft.com/v1.0/applications" \
+  --data-urlencode "\$filter=appId eq '$APP_ID'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
 
 USER_EMAIL=$(git config user.email)
@@ -260,8 +269,13 @@ curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPasswo
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
   > secret.json
 
-# Assemble credentials (appId and tenant are the same for all team members)
-TENANT_ID=$(jq -r .tenant .cloud-config.json 2>/dev/null || echo "ASK_USER")
+# Assemble credentials (appId and tenant are the same for all team members).
+# Read tenant provider-aware; never persist a placeholder — stop and ask if absent.
+TENANT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .tenant) else .tenant end) // empty' .cloud-config.json 2>/dev/null)
+if [ -z "$TENANT_ID" ]; then
+  echo "ERROR: Azure tenant ID not found in .cloud-config.json — ask the user and set TENANT_ID."
+  exit 1
+fi
 jq -n \
   --arg appId "$APP_ID" \
   --arg password "$(jq -r .secretText secret.json)" \
