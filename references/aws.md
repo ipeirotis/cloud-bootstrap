@@ -264,11 +264,23 @@ export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
 export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
 rm -f /tmp/credentials.json
 
+# Persist for the rest of the session, not just this shell. SessionStart and
+# one-off snippets run in short-lived subprocesses, so later AWS CLI commands
+# in new shells would otherwise lose these exports. $CLAUDE_ENV_FILE is the
+# harness mechanism for exporting env to the whole session.
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  {
+    echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'"
+    echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'"
+    echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'"
+  } >> "$CLAUDE_ENV_FILE"
+fi
+
 # Verify
 aws sts get-caller-identity
 ```
 
-**Note:** Unlike GCP, AWS credentials are exported as environment variables, not activated via a CLI command. They persist for the duration of the shell session.
+**Note:** Unlike GCP, AWS credentials are exported as environment variables, not activated via a CLI command. Persisting them to `$CLAUDE_ENV_FILE` keeps them available across the session's shells (the SessionStart hook does this too); otherwise they only live for the current shell.
 
 ## Verify (Smoke Test)
 

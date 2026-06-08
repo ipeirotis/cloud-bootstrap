@@ -4,11 +4,17 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 
 1. Read `.cloud-config.json` to determine the provider. Read the provider reference file.
 2. Ask the user for a bootstrap token (same as during setup).
-3. **Delete the old key on the provider side:**
-   - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's key, delete it.
-   - **AWS:** Delete the current access key: `aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id OLD_KEY_ID`
-   - **Azure:** Remove the current client secret (see "Secret Management" in azure.md).
-4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
+
+> **Order matters: create and verify the replacement BEFORE revoking the old key.**
+> For routine rotations, never delete the current provider-side key first. If the
+> create/encrypt/commit step then fails (bootstrap token expired, passphrase
+> missing, provider error), the committed encrypted credential would point at a
+> revoked key and lock the user out until they repeat privileged onboarding.
+> **Exception:** for a suspected/known compromise, revoke the old key immediately
+> (skip to step 6 first), accepting the brief lockout, since containment wins.
+
+3. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference. (Note the **new** key's id so you can revoke the correct, old one in step 6.)
+4. Verify the new key works (run the provider's "Verify (Smoke Test)") before touching the old one.
 5. Re-encrypt with the user's passphrase. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)
@@ -31,3 +37,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 6. Update `created_at` in `.cloud-config.json` to the current timestamp.
 7. Commit the updated encrypted credentials file and `.cloud-config.json`.
+8. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed):
+   - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's *previous* key, delete it.
+   - **AWS:** Delete the old access key: `aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id OLD_KEY_ID`
+   - **Azure:** Remove the *previous* client secret (see "Secret Management" in azure.md).
