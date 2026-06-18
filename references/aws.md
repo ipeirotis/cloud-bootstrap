@@ -210,10 +210,15 @@ mv credentials_clean.json credentials.json
 USER_EMAIL=$(git config user.email)
 SANITIZED_EMAIL=$(echo "$USER_EMAIL" | sed 's/[@.]/-/g')
 
-# Create user and add to existing group
+# Use the configured group (stored in service_account at setup; provider-aware
+# in multi-provider mode), not a hard-coded name, or the new user won't inherit
+# the repo's permissions.
+GROUP_NAME=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .service_account) else .service_account end) // "claude-agents"' .cloud-config.json 2>/dev/null)
+
+# Create user and add to the existing group
 aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"
 aws iam add-user-to-group \
-  --group-name claude-agents \
+  --group-name "$GROUP_NAME" \
   --user-name "claude-agent-${SANITIZED_EMAIL}"
 
 # Create access key

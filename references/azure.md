@@ -81,6 +81,15 @@ if ! az login --service-principal \
 fi
 az account set --subscription "$(jq -r .project_id "$CONFIG" 2>/dev/null)" 2>/dev/null || true
 
+# Persist the resolved az CLI path for the rest of the session. Without this,
+# later shells can have a valid cached Azure login but still hit
+# "az: command not found" (the AWS/GCP hooks persist their CLI paths the same way).
+if [ -n "$CLAUDE_ENV_FILE" ] && command -v az &>/dev/null; then
+  AZ_BIN="$(dirname "$(command -v az)")"
+  grep -qxF "export PATH=\"$AZ_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "export PATH=\"$AZ_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+fi
+
 echo "Azure credentials activated for $USER_EMAIL"
 ```
 
@@ -173,7 +182,9 @@ curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPasswo
 # path is used precisely when `az` is unavailable, so do NOT persist a
 # placeholder: collect the real tenant ID from the user before writing
 # credentials.json, otherwise the encrypted credential will fail every session.
-TENANT_ID=$(az account show --query tenantId -o tsv 2>/dev/null || true)
+# Honor a tenant the user already supplied; only probe `az` as a fallback (it
+# will be empty in the no-`az` REST path, so don't let it clobber a real value).
+TENANT_ID="${TENANT_ID:-$(az account show --query tenantId -o tsv 2>/dev/null || true)}"
 if [ -z "$TENANT_ID" ]; then
   echo "ERROR: Tenant ID not available. Ask the user for their Azure tenant ID"
   echo "       and set TENANT_ID before assembling credentials.json."

@@ -19,6 +19,13 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    - **Azure:** list the app's existing secret `keyId`s now (see "Secret Management") and note which one to remove.
    Save it as `OLD_KEY_ID` for the revoke step.
 4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
+   - **AWS caveat:** the add-team-member snippet calls `aws iam create-user` first, but during rotation the user already exists, so that call errors. For an AWS rotation, **skip `create-user`/`add-user-to-group`** and only create a new access key for the existing user:
+     ```bash
+     SANITIZED_EMAIL=$(echo "$(git config user.email)" | sed 's/[@.]/-/g')
+     aws iam create-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
+     # then reformat (access_key_id/secret_access_key/region) as in aws.md
+     ```
+     (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
 5. Verify the new key works (run the provider's "Verify (Smoke Test)") before touching the old one.
 6. Re-encrypt with the user's passphrase. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash

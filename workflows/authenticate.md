@@ -3,26 +3,9 @@
 Run this every time you need cloud access and are not yet authenticated. The SessionStart hook normally handles this automatically, but this flow serves as a fallback.
 
 1. Read `.cloud-config.json` to determine the provider.
-2. **Check credential age (per credential file):** Age is tracked per `.enc`
-   file, not repo-wide, so one teammate rotating does not reset everyone's age.
-   For the current user's encrypted credential file(s) (`$ENC_FILE`, resolved in
-   step 6), derive age from the file's last git commit time, falling back to the
-   shared `created_at` only when git history is unavailable:
-   ```bash
-   COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
-   if [ -z "$COMMIT_TS" ]; then
-     COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' .cloud-config.json)" +%s 2>/dev/null)
-   fi
-   if [ -n "$COMMIT_TS" ]; then
-     AGE_DAYS=$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))
-   fi
-   ```
-   If older than **180 days**, warn the user:
-   ```
-   Your <provider> credentials are <N> days old. Consider rotating them for
-   security. See the "Credential Rotation" workflow.
-   ```
-   This is a warning only — do not block authentication.
+2. **Credential age is checked per credential file**, not repo-wide, so one
+   teammate rotating does not reset everyone's age. The check needs `$ENC_FILE`
+   (resolved in step 6), so it runs in step 7 — once per provider/file — not here.
 3. Ensure the provider's CLI is installed by running the installation script from the corresponding reference file. This is a safety net in case the SessionStart hook hasn't run yet.
 4. Get the current user's email:
    ```bash
@@ -45,8 +28,20 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    fi
    ```
    In multi-provider mode, repeat steps 7–9 for **each** provider that has a credential file for the current user.
-7. Decrypt the user's credentials with restrictive permissions and guaranteed cleanup:
+7. For each resolved `$ENC_FILE`, first **warn on credential age** (per file, now
+   that `$ENC_FILE` is known), then decrypt with restrictive permissions and
+   guaranteed cleanup:
    ```bash
+   # Per-file age: derive from the file's last git commit time, falling back to
+   # the shared created_at only when git history is unavailable.
+   COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
+   if [ -z "$COMMIT_TS" ]; then
+     COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' .cloud-config.json)" +%s 2>/dev/null)
+   fi
+   if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
+     echo "NOTE: $PROVIDER credentials are over 180 days old — consider rotating (see Credential Rotation)."
+   fi
+
    trap 'rm -f /tmp/credentials.json' EXIT
    if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \

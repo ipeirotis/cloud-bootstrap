@@ -270,7 +270,8 @@ lives only in the ephemeral sandbox and is never written to the repo.
 After activating credentials, run this lightweight check to confirm they work:
 
 ```bash
-gcloud projects describe "$(jq -r .project_id .cloud-config.json)" --format="value(projectId)"
+# Provider-aware: in multi-provider repos project_id is in the providers[] entry.
+gcloud projects describe "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end)' .cloud-config.json)" --format="value(projectId)"
 ```
 
 If this fails with a permission error, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the service account.
