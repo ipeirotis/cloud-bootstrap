@@ -203,6 +203,7 @@ You can also check your installed version at any time: `cat .claude/skills/cloud
 |---------|-------------|-----|
 | "No credentials key found" | Passphrase env var not set | Set `CLOUD_CREDENTIALS_KEY` in Claude Code Web settings |
 | Decryption fails silently | Wrong passphrase or corrupted `.enc` file | Re-run setup with the correct passphrase |
+| gcloud 401 right after activation ("authenticated with an access token from the CLOUDSDK_AUTH_ACCESS_TOKEN environment variable") | Claude Code on the Web exports a placeholder `CLOUDSDK_AUTH_ACCESS_TOKEN` that gcloud prefers over the activated service account | The hook unsets it (1.4.1+); with an older hook, regenerate it from `references/gcp.md` or run `unset CLOUDSDK_AUTH_ACCESS_TOKEN` |
 | 403 after authentication | Service account missing a role | Ask your admin to grant the needed role (skill will suggest which one) |
 | CLI not found after hook runs | Install failed or PATH issue | Re-open session; hook retries install on next start |
 | Credential age warning | Key older than 180 days | Run credential rotation workflow |

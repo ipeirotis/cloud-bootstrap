@@ -3,6 +3,13 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-09-28
+
+### Fixed
+- GCP SessionStart hook (single- and multi-provider) now unsets `CLOUDSDK_AUTH_ACCESS_TOKEN` before activating the service account, and persists the `unset` to `$CLAUDE_ENV_FILE`. Claude Code on the Web exports that variable as a proxy placeholder, and gcloud gives it precedence over the activated service account, so every gcloud call failed with `401 UNAUTHENTICATED` right after the hook reported success. Python clients using `GOOGLE_APPLICATION_CREDENTIALS` were not affected.
+- GCP "Activate (Subsequent Sessions)" snippet unsets the same variable before `gcloud auth activate-service-account`
+- README: Added Troubleshooting row for gcloud 401 right after activation
+
 ## [1.4.0] - 2026-04-10
 
 ### Added

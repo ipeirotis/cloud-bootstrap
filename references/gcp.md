@@ -66,6 +66,11 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${GCP_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
+# Claude Code on the Web exports CLOUDSDK_AUTH_ACCESS_TOKEN as a proxy
+# placeholder (not a real token). gcloud gives it precedence over the service
+# account activated below, so every gcloud call would fail with 401.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+
 # --- Install gcloud if missing ---
 if ! command -v gcloud &> /dev/null; then
   for dir in /home/user/google-cloud-sdk/bin /usr/lib/google-cloud-sdk/bin /usr/local/google-cloud-sdk/bin; do
@@ -115,6 +120,8 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
     echo "export PATH=\"$GCLOUD_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
   grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
+  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
 
 echo "GCP credentials activated for $USER_EMAIL (gcloud CLI + Python ADC)"
@@ -255,11 +262,15 @@ gcloud CLI auth store) can authenticate too:
 ADC_KEY="/tmp/gcp-adc-credentials.json"   # decrypted here, never committed
 (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
+# The Web sandbox's placeholder CLOUDSDK_AUTH_ACCESS_TOKEN would override the
+# activated service account and make gcloud return 401.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
 gcloud auth activate-service-account --key-file="$ADC_KEY"
 # Provider-aware project: in multi-provider repos project_id is in providers[].
 gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end)' .cloud-config.json)"
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
-# If running outside the same shell, persist via $CLAUDE_ENV_FILE (see hook).
+# If running outside the same shell, persist both the export and the unset via
+# $CLAUDE_ENV_FILE (see hook).
 ```
 
 Do **not** delete the decrypted key while the session is using it for ADC; it

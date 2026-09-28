@@ -112,6 +112,10 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         fi
         export PATH="/home/user/google-cloud-sdk/bin:$PATH"
       fi
+      # The Web sandbox exports CLOUDSDK_AUTH_ACCESS_TOKEN as a proxy
+      # placeholder; gcloud prefers it over the activated service account
+      # and fails with 401, so drop it.
+      unset CLOUDSDK_AUTH_ACCESS_TOKEN
       if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
         echo "WARNING: gcloud auth failed — skipping GCP."
         rm -f /tmp/credentials.json; continue
@@ -130,6 +134,8 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
           echo "export PATH=\"$GCLOUD_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
         grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
           echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
+        grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+          echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
       fi
       ;;
     aws)
