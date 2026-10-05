@@ -428,7 +428,36 @@ else
 fi
 ```
 
-With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)" --subscription "$SUBSCRIPTION_ID" --yes` first (the subscription setup granted roles in, from `.cloud-setup-pending.json`, not the CLI's current default) (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`, then delete `.cloud-setup-pending.json`.
+With the CLI path (an `az` signed in with the bootstrap account), the same rollback is:
+
+```bash
+# Names from the setup record (works from a fresh shell), else from credentials.json
+pend() { jq -r --arg k "$1" 'select(.provider == "azure") | .[$k] // empty' .cloud-setup-pending.json 2>/dev/null; }
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
+APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+[ -n "$SUBSCRIPTION_ID" ] && [ -n "$APP_ID" ] \
+  || { echo "ERROR: set SUBSCRIPTION_ID and APP_ID from the failed setup's output."; exit 1; }
+if ! OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
+  # Already deleted (an earlier attempt): nothing left to remove here
+  printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound' \
+    || { echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1; }
+  echo "Application $APP_ID no longer exists."
+else
+  # Role assignments are not removed with the application: delete every one in
+  # the setup's subscription (not the CLI's current default), at any scope,
+  # and keep the application unless none remain
+  IDS=$(az role assignment list --assignee "$APP_ID" --subscription "$SUBSCRIPTION_ID" --all --query '[].id' -o tsv) \
+    || { echo "ERROR: could not list role assignments of $APP_ID; nothing deleted."; exit 1; }
+  [ -z "$IDS" ] || az role assignment delete --ids $IDS --subscription "$SUBSCRIPTION_ID" \
+    || { echo "ERROR: could not delete all role assignments of $APP_ID; the application is kept. Re-run this block."; exit 1; }
+  LEFT=$(az role assignment list --assignee "$APP_ID" --subscription "$SUBSCRIPTION_ID" --all --query 'length(@)' -o tsv)
+  [ "$LEFT" = 0 ] || { echo "ERROR: role assignments of $APP_ID remain; the application is kept. Re-run this block."; exit 1; }
+  az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
+fi
+rm -f .cloud-setup-pending.json
+rm -f credentials.json
+echo "Rollback complete."
+```
 
 ## Grant Roles
 

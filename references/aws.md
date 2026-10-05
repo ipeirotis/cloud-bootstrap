@@ -498,6 +498,13 @@ rollback_member() {
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# The name must be free first: a user that already exists belongs to someone
+# else (another member whose email maps to the same name, or an earlier
+# setup), and recording it would let a later rollback delete it
+if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  echo "ERROR: IAM user $IAM_USER already exists (or the lookup failed); nothing created. Resolve with the user."
+  exit 1
+fi
 # Record the member's user before creating it (not secret; member_only: a
 # rollback removes this user, never the shared group), so an interruption
 # before credentials.json exists is still recovered from any shell
@@ -506,14 +513,12 @@ jq -n --arg a "$AWS_ACCOUNT_ID" --arg u "$IAM_USER" \
   && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json \
   || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 # Create user and add to the existing group. Stop unless create-user succeeds:
-# EntityAlreadyExists (409) means a user of this name already exists, and
-# continuing would hand this member that user's identity. Nothing was created
-# then, so there is nothing to roll back.
+# continuing would hand this member whatever user holds that name.
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  # A lost response can hide a user that was created: keep the record unless
-  # the user is confirmed absent
+  # The name was free just before, so a user found now is this run's (a lost
+  # response): keep the record for the rollback unless it is confirmed absent
   if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
-    echo "ERROR: create-user failed but $IAM_USER exists; if this run created it, run Rollback a Failed Setup (the record is kept), else resolve with the user."
+    echo "ERROR: create-user failed but $IAM_USER now exists; run Rollback a Failed Setup (the record is kept)."
   elif printf '%s' "$OUT" | grep -q NoSuchEntity; then
     rm -f .cloud-setup-pending.json
     echo "ERROR: could not create IAM user $IAM_USER; nothing was created."
