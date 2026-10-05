@@ -296,15 +296,8 @@ fi
 # validated; on any local failure, delete the key so it is not left orphaned.
 KEY_NAME=$(jq -r '.name // empty' "$RESP")
 KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP"); rm -f "$RESP"
-discard_new_key() {
-  rm -f credentials.json
-  if [ -n "$KEY_NAME" ] && curl -sS --fail -X DELETE "https://iam.googleapis.com/v1/$KEY_NAME" \
-       -H "Authorization: Bearer $TOKEN" >/dev/null; then
-    echo "Deleted the unusable new key ${KEY_NAME##*/}."
-  else
-    echo "WARNING: could not delete new key '${KEY_NAME:-unknown}'; delete it via Key Management."
-    echo "$(date -u +%FT%TZ) gcp key ${KEY_NAME:-unknown}" >> cloud-revoke-pending.txt
-  fi
+discard_new_key() {   # deletes the key by its resource name; see scripts/discard-credential.sh
+  CRED_ID="$KEY_NAME" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
 }
 [ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; discard_new_key; exit 1; }
 (umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json) \
@@ -369,20 +362,23 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 IDS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end)) | unique | .[]' .cloud-config.json)
 [ -n "$IDS" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
-# --fail turns a 401/403/404 into an error. Each ID leaves the config only once
-# Google confirms; the .enc file goes only when every key is gone.
+# Each ID leaves the config only once Google confirms it is gone (deleted now,
+# or 404 because it already was); the .enc file goes only when every key is.
 FAILED=""
 for ID in $IDS; do
-  if curl -sS --fail -X DELETE \
+  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
     "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
-    -H "Authorization: Bearer $TOKEN" >/dev/null; then
+    -H "Authorization: Bearer $TOKEN")
+  # 404: the key no longer exists (deleted earlier), so its record can go too
+  if [ "$HTTP" = 200 ] || [ "$HTTP" = 404 ]; then
     jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
         | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
         | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end);
       if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
       else clr end' .cloud-config.json > .cloud-config.json.tmp \
-      && mv .cloud-config.json.tmp .cloud-config.json
+      && mv .cloud-config.json.tmp .cloud-config.json \
+      || { echo "ERROR: key $ID is deleted but .cloud-config.json could not be updated."; FAILED="$FAILED $ID"; }
   else
     FAILED="$FAILED $ID"
   fi

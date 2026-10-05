@@ -86,7 +86,6 @@ Using the bootstrap token and provider-specific commands from the reference file
    # during setup; the hooks' decrypted copies live in the system /tmp)
    /credentials.json
    /credentials_clean.json
-   /cloud-revoke-pending.txt
    ```
 9. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update.
 

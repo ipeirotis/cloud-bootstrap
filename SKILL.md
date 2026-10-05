@@ -136,6 +136,16 @@ When executing any workflow, follow these communication standards:
 - **Do NOT** output raw credentials, keys, or passphrases to the chat. If you need to show a file's contents for debugging, show only the first and last 4 characters.
 - **Bootstrap tokens are the one thing the user pastes in.** Setup, add-member, and rotation need the user's short-lived (~1 hour) bootstrap token(s), which they paste into the session; that is the designed handoff, not an exception to the rule above. Use them only for the current workflow, never write them to the repo or echo them back, and keep any copy in a private temp file deleted when the workflow ends. If the user prefers not to paste a token, give them the exact commands to run themselves instead.
 
+## Discarding an Unusable New Credential
+
+When a credential this skill just created cannot be used (verification, decoding, or encryption failed), revoke it before stopping, from the repository root:
+
+```bash
+bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh <gcp|aws|azure> [key|member]
+```
+
+It finds everything it needs from `credentials.json`, `.cloud-config.json` and the provider (with the bootstrap token in the environment), revokes the key or secret (`member` also deletes a new AWS member's user), and deletes the plaintext. If revocation fails, it records the non-secret ID under `unrevoked` in `.cloud-config.json`: commit that, and revoke it by hand later.
+
 ## Examples
 
 ### Example 1: First-time setup (happy path)

@@ -14,3 +14,4 @@ workflows/credential-rotation.md
 workflows/permission-escalation.md
 workflows/multi-provider.md
 workflows/uninstall.md
+scripts/discard-credential.sh

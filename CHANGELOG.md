@@ -42,17 +42,20 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- New `scripts/discard-credential.sh` revokes a credential the skill just created but cannot use (failed verification, encryption, or decoding) and deletes its plaintext. It re-resolves everything from `credentials.json`, the config and the provider, so it works from a fresh shell; Add Team Member, rotation (steps 5 and 6) and Create Key all use it. When revocation fails it records the non-secret ID under `unrevoked` in `.cloud-config.json`, to be committed, instead of an ignored local file.
+- Rotation re-encryption failure (step 6) now revokes the replacement instead of leaving it and its plaintext behind; AWS verification reads the new key's owner from AWS, so it works without `IAM_USER` in the shell.
+- A compromise-path revoke (step 9 before step 4) records `revoked_early`, so step 8 in a fresh shell knows the old key is gone. Step 9 and offboarding treat a 404 as already deleted and report a failed config update separately.
+- Uninstall removes the identity (GCP service account and its bindings, AWS users/policies/group, Azure role assignments and app), not only its keys, revokes anything under `unrevoked`, and removes only the `cloud-auth.sh` SessionStart hook, keeping others.
 - GCP Create Key deletes the new provider-side key when the response cannot be decoded or validated locally.
 - Manual GCP activation clears `CLOUDSDK_AUTH_ACCESS_TOKEN`, and manual AWS activation clears `AWS_SESSION_TOKEN`/`AWS_PROFILE`, in the shell and in `CLAUDE_ENV_FILE`, as the hooks do.
 - AWS setup rollback detaches managed and deletes inline group policies before deleting the group; the reformatted AWS `credentials.json` is written under `umask 077`.
-- Uninstall removes the `/cloud-revoke-pending.txt` ignore rule.
 - Rotation step 8 stops, instead of warning, when no old GCP key ID is known (configs older than `key_ids`), so the old key is never left unrecorded.
 - Add Team Member's Azure rollback re-resolves the application and finds the new secret by its member label when run in a fresh shell.
 - `revoke_pending` is a list per member: a second rotation adds to it instead of overwriting a still-live key; rotation step 9 deletes every listed key (and, with `COMPROMISE=1` before the replacement exists, the current `key_ids` key, even from a fresh shell); offboarding deletes the current and all pending keys and removes the `.enc` file only when all are gone.
 - AWS setup and Add Team Member check with `get-caller-identity` that the bootstrap credentials belong to the approved account before any IAM change.
 - Azure setup uses the REST path with the pasted tokens unless the sandbox's `az` is itself signed in; the CLI snippets check `az account show` and stop otherwise.
 - The multi-provider hook persists the Azure CLI location to `CLAUDE_ENV_FILE`.
-- Add Team Member's AWS rollback on failed encryption runs inline (finding the user from the new access key); any credential that cannot be revoked is recorded, without secrets, in an untracked `cloud-revoke-pending.txt`.
+- Add Team Member's AWS rollback on failed encryption runs inline (finding the user from the new access key).
 - GCP offboarding resolves the project and service account in its own block; after an early (compromise-path) revoke, rotation no longer re-queues the deleted key in `revoke_pending`.
 - Add Team Member revokes the new GCP key, Azure secret, or AWS user when encryption fails, and always removes the plaintext.
 - All hook templates `cd` to `$CLAUDE_PROJECT_DIR` first, so a session started in a subdirectory still authenticates.

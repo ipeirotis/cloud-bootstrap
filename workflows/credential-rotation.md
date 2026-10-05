@@ -54,19 +54,19 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud config get-value account
        rm -rf "$TMPCFG"
      else
-       # Leave nothing behind: delete the unverified replacement key and its plaintext
+       # Leave nothing behind: revoke the unverified replacement, delete its plaintext
        rm -rf "$TMPCFG"
-       curl -sS --fail -X DELETE \
-         "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$NEW_KEY_ID" \
-         -H "Authorization: Bearer $TOKEN" >/dev/null \
-         || echo "WARNING: could not delete replacement key $NEW_KEY_ID; delete it via Key Management."
-       rm -f credentials.json
+       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
        echo "ERROR: the replacement key failed verification; nothing was encrypted and the old key was not revoked by this step."; exit 1
      fi
      ```
    - **AWS** (new keys can take a few seconds to propagate, so retry with backoff; on final failure delete the new key, or the next attempt hits the two-key limit):
      ```bash
      NEW_KEY_ID=$(jq -r .access_key_id credentials.json)
+     # The key's owner, from AWS itself (works in a fresh shell); it must be
+     # this member's user when IAM_USER is known from step 3
+     KEY_OWNER=$(aws iam get-access-key-last-used --access-key-id "$NEW_KEY_ID" --query UserName --output text)
+     IAM_USER="${IAM_USER:-$KEY_OWNER}"
      ARN=""
      for delay in 0 5 10 20 40; do
        sleep "$delay"
@@ -76,16 +76,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
          aws sts get-caller-identity --query Arn --output text 2>/dev/null) && break
        ARN=""
      done
-     if [ -n "$ARN" ] && [ "${ARN##*/}" = "$IAM_USER" ]; then
+     if [ -n "$ARN" ] && [ "${ARN##*/}" = "$IAM_USER" ] && [ "$KEY_OWNER" = "$IAM_USER" ]; then
        echo "$ARN"
      else
-       aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$NEW_KEY_ID" \
-         || echo "WARNING: could not delete replacement key $NEW_KEY_ID; delete it by hand."
-       rm -f credentials.json
+       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh aws key
        echo "ERROR: the replacement key failed verification (got '$ARN'); nothing was encrypted."; exit 1
      fi
      ```
-   - **Azure** (`OBJECT_ID` and `NEW_SECRET_KEY_ID` from "Add Client Secret"; on failure remove the new secret so no live, untracked secret is left):
+   - **Azure** (on failure remove the new secret so no live, untracked secret is left):
      ```bash
      TMPCFG=$(mktemp -d)
      if AZURE_CONFIG_DIR="$TMPCFG" az login --service-principal \
@@ -95,12 +93,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        rm -rf "$TMPCFG"
      else
        rm -rf "$TMPCFG"
-       STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-         "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
-         -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
-         -d "{\"keyId\": \"$NEW_SECRET_KEY_ID\"}")
-       [ "$STATUS" = "204" ] || echo "WARNING: could not remove replacement secret $NEW_SECRET_KEY_ID (HTTP $STATUS); remove it via Secret Management."
-       rm -f credentials.json
+       # Re-resolves the app and the new secret itself (works in a fresh shell)
+       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
        echo "ERROR: the replacement secret failed verification; nothing was encrypted."; exit 1
      fi
      ```
@@ -121,8 +115,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    fi
    # Encrypt to a private temp file in the same directory, prove it decrypts
    # to the new key, and only then replace ENC_FILE in one rename. A failed or
-   # interrupted write never truncates the current credential, and the
-   # plaintext is kept until the replacement is safely in place.
+   # interrupted write never truncates the current credential; on failure the
+   # replacement is revoked and its plaintext deleted, so nothing is stranded.
    TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX")
    if echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
         -in credentials.json -out "$TMP_ENC" \
@@ -131,7 +125,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      mv -f "$TMP_ENC" "$ENC_FILE" && rm -f credentials.json
    else
      rm -f "$TMP_ENC"
-     echo "ERROR: re-encryption failed; $ENC_FILE and credentials.json are unchanged. Fix the cause and retry."
+     echo "ERROR: re-encryption failed; $ENC_FILE is unchanged. Revoking the replacement; retry the rotation from step 4."
+     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" key
      exit 1
    fi
    ```
@@ -146,6 +141,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -n "$NEW_KEY_ID" ] || { echo "ERROR: could not determine the new key ID; nothing recorded."; exit 1; }
    gcpcfg() { jq -r --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider==\"gcp\")) else . end) | $1 // empty" .cloud-config.json; }
    OLD_KEY_ID="${OLD_KEY_ID:-$(gcpcfg '.key_ids[$e]')}"
+   # Compromise path: step 9 already deleted the old key and recorded that in
+   # revoked_early, which survives fresh shells
+   [ -n "$(gcpcfg '.revoked_early[$e]')" ] && OLD_KEY_REVOKED=1
    [ "${OLD_KEY_REVOKED:-}" = 1 ] && OLD_KEY_ID=""     # revoked early (compromise path)
    [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
    # Never overwrite key_ids without a record of the key it replaces (configs
@@ -156,7 +154,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      exit 1
    fi
    jq --arg e "$USER_EMAIL" --arg new "$NEW_KEY_ID" --arg old "${OLD_KEY_ID:-}" '
-     def upd: .key_ids[$e] = $new
+     def upd: .key_ids[$e] = $new | del(.revoked_early[$e])
        | if $old != "" then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [$old] | unique) else . end;
      if .providers then .providers |= map(if .provider == "gcp" then upd else . end) else upd end' \
      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
@@ -175,25 +173,31 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      [ "${COMPROMISE:-}" = 1 ] && IDS="$IDS $(gcpcfg '.key_ids[$e]')"
      IDS=$(printf '%s\n' $IDS | sort -u)
      [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no OLD_KEY_ID, no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }
-     FAILED=""
+     FAILED=""; UNRECORDED=""
      for ID in $IDS; do
-       if curl -sS --fail -X DELETE \
-            "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
-            -H "Authorization: Bearer $TOKEN" >/dev/null; then
-         # Gone: drop it from revoke_pending, and from key_ids if it is still
-         # named there (compromise path, before the replacement exists)
-         jq --arg e "$USER_EMAIL" --arg id "$ID" '
-           def clr: (if .revoke_pending[$e] then .revoke_pending[$e] = (((.revoke_pending[$e]) | if type == "string" then [.] else . end) - [$id]) else . end)
-             | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
-             | (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end);
-           if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
-           else clr end' .cloud-config.json > .cloud-config.json.tmp \
-           && mv .cloud-config.json.tmp .cloud-config.json
-       else
-         FAILED="$FAILED $ID"
-       fi
+       HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+         "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
+         -H "Authorization: Bearer $TOKEN")
+       case "$HTTP" in
+         200) ;;
+         404) echo "Key $ID no longer exists under $SA_EMAIL (deleted earlier); clearing its record." ;;
+         *)   FAILED="$FAILED $ID"; continue ;;
+       esac
+       # Gone: drop it from revoke_pending; if key_ids still names it (compromise
+       # path, before the replacement exists), move it to revoked_early so a
+       # later step 8, even in a fresh shell, knows the old key is already gone
+       jq --arg e "$USER_EMAIL" --arg id "$ID" '
+         def clr: (if .revoke_pending[$e] then .revoke_pending[$e] = (((.revoke_pending[$e]) | if type == "string" then [.] else . end) - [$id]) else . end)
+           | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
+           | (if .key_ids[$e] == $id then del(.key_ids[$e]) | .revoked_early[$e] = $id else . end);
+         if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
+         else clr end' .cloud-config.json > .cloud-config.json.tmp \
+         && mv .cloud-config.json.tmp .cloud-config.json \
+         || UNRECORDED="$UNRECORDED $ID"
      done
-     [ -z "$FAILED" ] || { echo "ERROR: still active, kept in config for a retry with a fresh token:$FAILED"; exit 1; }
+     [ -z "$UNRECORDED" ] || echo "ERROR: deleted at Google, but .cloud-config.json could not be updated for:$UNRECORDED. Remove them from revoke_pending/key_ids by hand (a retry also clears them: a 404 counts as deleted)."
+     [ -z "$FAILED" ] || echo "ERROR: still active, kept in config for a retry with a fresh token:$FAILED"
+     [ -z "$FAILED$UNRECORDED" ] || exit 1
      # All gone: make sure a later step 8 (compromise path) queues nothing
      unset OLD_KEY_ID COMPROMISE; OLD_KEY_REVOKED=1
      ```

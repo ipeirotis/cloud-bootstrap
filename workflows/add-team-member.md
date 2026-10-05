@@ -52,56 +52,13 @@ Using the bootstrap token and provider-specific commands:
    if ! echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
         -pass stdin \
         -in credentials.json -out "$ENC_FILE"; then
-     # The provider-side credential is live but unusable: revoke it, then drop
-     # the plaintext, so nothing active and untracked is left behind. If a
-     # revocation fails, its non-secret ID goes to cloud-revoke-pending.txt
-     # (untracked) so it can still be found and removed by hand.
+     # The provider-side credential is live but unusable: revoke it (for AWS,
+     # with the member's new IAM user) and delete the plaintext. If revocation
+     # fails, the script records the ID under "unrevoked" in .cloud-config.json;
+     # commit that file so the record is kept.
      rm -f "$ENC_FILE"
      echo "ERROR: encryption failed; revoking the new $PROVIDER credential."
-     pending() { echo "$(date -u +%FT%TZ) $PROVIDER $*" >> cloud-revoke-pending.txt; echo "WARNING: could not revoke $*; recorded in cloud-revoke-pending.txt."; }
-     case "$PROVIDER" in
-       gcp)
-         KEY_ID=$(jq -r .private_key_id credentials.json)
-         PROJECT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .project_id // empty' .cloud-config.json)
-         SA_EMAIL=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .service_account // empty' .cloud-config.json)
-         curl -sS --fail -X DELETE \
-           "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$KEY_ID" \
-           -H "Authorization: Bearer $TOKEN" >/dev/null \
-           || pending "key $KEY_ID of $SA_EMAIL (delete via Key Management in references/gcp.md)" ;;
-       azure)
-         # Re-resolve from config and Graph: this may run in a fresh shell.
-         # The new secret is the newest one carrying this member's label.
-         APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure")) else . end) | .service_account // empty' .cloud-config.json)
-         OBJECT_ID="${OBJECT_ID:-$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
-           --data-urlencode "\$filter=appId eq '$APP_ID'" \
-           -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')}"
-         NEW_SECRET_KEY_ID="${NEW_SECRET_KEY_ID:-$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
-           -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$USER_EMAIL" \
-           '[.passwordCredentials[] | select(.displayName == $n)] | sort_by(.startDateTime) | last | .keyId // empty')}"
-         STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-           "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
-           -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
-           -d "{\"keyId\": \"$NEW_SECRET_KEY_ID\"}")
-         [ -n "$OBJECT_ID" ] && [ -n "$NEW_SECRET_KEY_ID" ] && [ "$STATUS" = "204" ] \
-           || pending "secret '${NEW_SECRET_KEY_ID:-labelled claude-code-$USER_EMAIL}' of app $APP_ID (HTTP $STATUS; remove via Secret Management in references/azure.md)" ;;
-       aws)
-         # Find the user from the new key itself, then remove keys, groups, user
-         AK=$(jq -r '.access_key_id // .AccessKey.AccessKeyId // empty' credentials.json)
-         U=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>/dev/null)
-         if [ -n "$U" ] && [ "$U" != "None" ]; then
-           for k in $(aws iam list-access-keys --user-name "$U" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
-             aws iam delete-access-key --user-name "$U" --access-key-id "$k"
-           done
-           for g in $(aws iam list-groups-for-user --user-name "$U" --query 'Groups[].GroupName' --output text); do
-             aws iam remove-user-from-group --group-name "$g" --user-name "$U"
-           done
-           aws iam delete-user --user-name "$U" || pending "IAM user $U (access key $AK)"
-         else
-           pending "access key $AK (its IAM user could not be looked up)"
-         fi ;;
-     esac
-     # Key IDs are printed above; the plaintext secret is never kept
-     rm -f credentials.json
+     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
      exit 1
    fi
    ```
