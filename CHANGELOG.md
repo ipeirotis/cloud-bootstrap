@@ -42,6 +42,11 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- Passphrases go to OpenSSL through `printf '%s\n'` instead of `echo`, so a passphrase such as `-n` or `-e` is not swallowed as an option (normal passphrases produce the same bytes as before).
+- Azure Graph responses, one of which holds the plaintext secret, are written to a private temp directory outside the repo that is removed on any exit.
+- AWS offboarding stops before removing the member's credential file unless every IAM deletion succeeded, and then clears their pending entries.
+- GCP Key Limits: keep one key slot free for rotation (9 members per service account).
+- The discard-script call sites pass the bootstrap tokens and identifiers to the child process explicitly.
 - Rotation saves the old key ID under `rotating[<email>]` in `.cloud-config.json` at step 3 for every provider; steps 8 and 9 are provider-generic, re-resolve the passphrase, file and identifiers themselves, and work through `revoke_pending` for AWS and Azure as for GCP. A failed rename in step 6 also revokes the replacement.
 - Azure credentials carry the secret's `keyId`, so cleanup and rotation target the exact secret even when runs share a label; `discard-credential.sh` accepts a full GCP key resource name without any config.
 - New `scripts/discard-credential.sh` revokes a credential the skill just created but cannot use (failed verification, encryption, or decoding) and deletes its plaintext. It re-resolves everything from `credentials.json`, the config and the provider, so it works from a fresh shell; Add Team Member, rotation (steps 5 and 6) and Create Key all use it. When revocation fails it records the non-secret ID under `unrevoked` in `.cloud-config.json`, to be committed, instead of an ignored local file.

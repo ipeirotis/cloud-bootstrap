@@ -66,7 +66,7 @@ resolve_credentials_key() {
     echo "Set ${provider^^}_CREDENTIALS_KEY or CLOUD_CREDENTIALS_KEY."
     return 1
   fi
-  echo "$KEY"
+  printf '%s\n' "$KEY"
 }
 ```
 

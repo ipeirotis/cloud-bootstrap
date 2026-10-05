@@ -10,7 +10,7 @@ The user's GCP account needs **Service Account Key Admin** on the project (or on
 
 ## Key Limits
 
-GCP allows **10 keys per service account**. This means up to 10 team members can each have their own key. If you hit this limit, you can list and delete unused keys (see "Key Management" below).
+GCP allows **10 keys per service account**. Keep one slot free: Credential Rotation creates and verifies the replacement before deleting the old key, so a member can rotate only while the account has fewer than 10 keys. In practice that is **9 team members** per service account (fewer while old keys await revocation in `revoke_pending`). Before adding a member or rotating, count the keys ("Key Management" below) and delete unused ones; if all 10 are in use, rotate by the compromise ordering (revoke first, accepting a brief lockout) or create a second service account.
 
 ## Bootstrap Token Command
 
@@ -112,7 +112,7 @@ fi
 # gcloud CLI auth store) can authenticate. It lives only in the ephemeral
 # sandbox, never in the repo (the repo only ever holds the encrypted .enc).
 ADC_KEY="/tmp/gcp-adc-credentials.json"
-if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY" 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check GCP_CREDENTIALS_KEY or .enc file integrity."
   rm -f "$ADC_KEY"
@@ -297,7 +297,8 @@ fi
 KEY_NAME=$(jq -r '.name // empty' "$RESP")
 KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP"); rm -f "$RESP"
 discard_new_key() {   # deletes the key by its resource name; see scripts/discard-credential.sh
-  CRED_ID="$KEY_NAME" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
+  CRED_ID="$KEY_NAME" TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
 }
 [ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; discard_new_key; exit 1; }
 (umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json) \
@@ -322,7 +323,7 @@ fi
 if [ -z "$KEY_ID" ]; then
   for f in ".cloud-credentials.gcp.${USER_EMAIL}.enc" ".cloud-credentials.${USER_EMAIL}.enc"; do
     [ -f "$f" ] || continue
-    KEY_ID=$(echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$f" 2>/dev/null \
+    KEY_ID=$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$f" 2>/dev/null \
       | jq -r '.private_key_id // empty')
     [ -n "$KEY_ID" ] && break
   done
@@ -409,7 +410,7 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
-(umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+(umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
 gcloud auth activate-service-account --key-file="$ADC_KEY"
 # Provider-aware project: in multi-provider repos project_id is in providers[].

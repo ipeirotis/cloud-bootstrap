@@ -49,7 +49,7 @@ Using the bootstrap token and provider-specific commands:
      PROVIDER=$(jq -r .provider .cloud-config.json)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
-   if ! echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+   if ! printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
         -pass stdin \
         -in credentials.json -out "$ENC_FILE"; then
      # The provider-side credential is live but unusable: revoke it (for AWS,
@@ -58,7 +58,8 @@ Using the bootstrap token and provider-specific commands:
      # commit that file so the record is kept.
      rm -f "$ENC_FILE"
      echo "ERROR: encryption failed; revoking the new $PROVIDER credential."
-     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
+     TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
      exit 1
    fi
    ```

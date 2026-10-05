@@ -64,7 +64,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      else
        # Leave nothing behind: revoke the unverified replacement, delete its plaintext
        rm -rf "$TMPCFG"
-       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
+       TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
        echo "ERROR: the replacement key failed verification; nothing was encrypted and the old key was not revoked by this step."; exit 1
      fi
      ```
@@ -87,7 +88,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      if [ -n "$ARN" ] && [ "${ARN##*/}" = "$IAM_USER" ] && [ "$KEY_OWNER" = "$IAM_USER" ]; then
        echo "$ARN"
      else
-       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh aws key
+       TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh aws key
        echo "ERROR: the replacement key failed verification (got '$ARN'); nothing was encrypted."; exit 1
      fi
      ```
@@ -102,7 +104,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      else
        rm -rf "$TMPCFG"
        # Re-resolves the app and the new secret itself (works in a fresh shell)
-       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+       TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
        echo "ERROR: the replacement secret failed verification; nothing was encrypted."; exit 1
      fi
      ```
@@ -126,16 +129,17 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    # interrupted write never truncates the current credential; on failure the
    # replacement is revoked and its plaintext deleted, so nothing is stranded.
    TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX")
-   if echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
+   if printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
         -in credentials.json -out "$TMP_ENC" \
-      && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
+      && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
         | cmp -s - credentials.json \
       && mv -f "$TMP_ENC" "$ENC_FILE"; then
      rm -f credentials.json
    else
      rm -f "$TMP_ENC"
      echo "ERROR: re-encryption failed; $ENC_FILE is unchanged. Revoking the replacement; retry the rotation from step 4."
-     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" key
+     TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" key
      exit 1
    fi
    ```
@@ -157,7 +161,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
    # The new key's ID, read back from the re-encrypted file
-   NEW_KEY_ID="${NEW_KEY_ID:-$(echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
+   NEW_KEY_ID="${NEW_KEY_ID:-$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
      | jq -r '.private_key_id // .access_key_id // .keyId // empty')}"
    if [ "$PROVIDER" = gcp ] && [ -z "$NEW_KEY_ID" ]; then
      echo "ERROR: could not read the new key ID from $ENC_FILE; nothing recorded."; exit 1

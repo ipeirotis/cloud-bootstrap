@@ -47,7 +47,7 @@ Key concepts:
 - Keep provider-specific details in `references/<provider>.md`, not in SKILL.md or workflow files.
 - SKILL.md is the router — it detects the phase and tells the agent which workflow file to read. Keep it slim.
 - Workflow-specific details belong in `workflows/<workflow>.md`, not in SKILL.md.
-- Encryption/decryption commands must always use `echo "$KEY" | openssl ... -pass stdin` (never `-pass pass:$KEY`) to avoid leaking the key in process listings.
+- Encryption/decryption commands must always use `printf '%s\n' "$KEY" | openssl ... -pass stdin` (never `-pass pass:$KEY`) to avoid leaking the key in process listings.
 
 ## Versioning
 

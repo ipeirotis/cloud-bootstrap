@@ -124,7 +124,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   fi
 
   # Decrypt with restrictive permissions
-  if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+  if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
     -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
     echo "WARNING: Failed to decrypt $PROVIDER credentials — check key or .enc file integrity."
     rm -f /tmp/credentials.json

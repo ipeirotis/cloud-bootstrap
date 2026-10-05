@@ -106,7 +106,7 @@ fi
 
 # --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
 trap 'rm -f /tmp/credentials.json' EXIT
-if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check AWS_CREDENTIALS_KEY or .enc file integrity."
   exit 0
@@ -519,20 +519,31 @@ iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 charact
 }
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
-IAM_USER=$(iam_user_name "departed-user@example.com" "$USER_PREFIX")
+MEMBER_EMAIL="departed-user@example.com"
+IAM_USER=$(iam_user_name "$MEMBER_EMAIL" "$USER_PREFIX")
 
-# Delete their access keys
-for KEY_ID in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
-  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID"
+# Every step must succeed before the member's credential file goes: a failed
+# deletion leaves a live user or key, and the file is the repo's record of it.
+KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text) \
+  || { echo "ERROR: could not list $IAM_USER's access keys; nothing deleted."; exit 1; }
+for KEY_ID in $KEYS; do
+  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID" \
+    || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
 done
-
 # Remove from the configured group, then delete: delete-user fails while any
 # group membership remains.
-aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER"
-aws iam delete-user --user-name "$IAM_USER"
+aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
+  && aws iam delete-user --user-name "$IAM_USER" \
+  || { echo "ERROR: could not remove or delete $IAM_USER; the credential file stays. Retry."; exit 1; }
+# All gone: now remove the member's credential file and any pending entries
+git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+jq --arg e "$MEMBER_EMAIL" '
+  def clr: del(.revoke_pending[$e]) | del(.rotating[$e]);
+  if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
+  .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
 ```
 
-Also remove the member's credential file from the repo: `.cloud-credentials.aws.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`.
+Commit the removed credential file and `.cloud-config.json` together.
 
 ## Common Policies Reference
 

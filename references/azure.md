@@ -83,7 +83,7 @@ fi
 
 # --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
 trap 'rm -f /tmp/credentials.json' EXIT
-if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check AZURE_CREDENTIALS_KEY or .enc file integrity."
   exit 0
@@ -215,13 +215,16 @@ If `az` is not available, use the Microsoft Graph API (requires `$GRAPH_TOKEN`):
 # principal and secrets with it) and the local response files.
 set -e
 APP_OBJECT_ID=""
+# Graph responses (one holds the plaintext secret) go to a private temp dir
+# outside the repo, removed on any exit, including an interruption
+RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
 cleanup_failed_setup() {
   if [ -n "$APP_OBJECT_ID" ]; then
     curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
       -H "Authorization: Bearer $GRAPH_TOKEN" >/dev/null \
       || echo "WARNING: could not delete application $APP_OBJECT_ID; remove it in the portal."
   fi
-  rm -f app.json sp.json secret.json credentials.json
+  rm -f credentials.json
 }
 trap 'cleanup_failed_setup' ERR
 
@@ -240,24 +243,24 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"displayName\": \"$SP_NAME\"}" > app.json)
-APP_ID=$(jq -r '.appId // empty' app.json)
-APP_OBJECT_ID=$(jq -r '.id // empty' app.json)
+  -d "{\"displayName\": \"$SP_NAME\"}" > "$RESP_DIR/app.json")
+APP_ID=$(jq -r '.appId // empty' "$RESP_DIR/app.json")
+APP_OBJECT_ID=$(jq -r '.id // empty' "$RESP_DIR/app.json")
 [ -n "$APP_ID" ] && [ -n "$APP_OBJECT_ID" ] || { echo "ERROR: application response lacks appId/id."; false; }
 
 # Step 2: Create service principal
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"appId\": \"$APP_ID\"}" > sp.json)
-[ -n "$(jq -r '.id // empty' sp.json)" ] || { echo "ERROR: service principal response lacks id."; false; }
+  -d "{\"appId\": \"$APP_ID\"}" > "$RESP_DIR/sp.json")
+[ -n "$(jq -r '.id // empty' "$RESP_DIR/sp.json")" ] || { echo "ERROR: service principal response lacks id."; false; }
 
 # Step 3: Add client secret
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"passwordCredential": {"displayName": "claude-code"}}' > secret.json)
-SECRET=$(jq -r '.secretText // empty' secret.json)
+  -d '{"passwordCredential": {"displayName": "claude-code"}}' > "$RESP_DIR/secret.json")
+SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 [ -n "$SECRET" ] || { echo "ERROR: addPassword response lacks secretText."; false; }
 
 # Step 4: Assemble credentials
@@ -268,7 +271,6 @@ SECRET=$(jq -r '.secretText // empty' secret.json)
   '{appId: $appId, password: $password, tenant: $tenant}' > credentials.json)
 
 trap - ERR
-rm -f app.json sp.json secret.json
 echo "Created application $SP_NAME (object id $APP_OBJECT_ID). Keep APP_OBJECT_ID until setup finishes."
 ```
 
@@ -402,17 +404,21 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
 
 USER_EMAIL=$(git config user.email)
 
+# The addPassword response holds the plaintext secret: keep it in a private
+# temp dir outside the repo, removed on any exit, including an interruption
+RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
+
 # Add a new client secret labeled with the user's email; fail on HTTP errors
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
-  > secret.json) || { rm -f secret.json; echo "ERROR: addPassword failed; no secret was created."; exit 1; }
-SECRET=$(jq -r '.secretText // empty' secret.json)
+  > "$RESP_DIR/secret.json") || { echo "ERROR: addPassword failed; no secret was created."; exit 1; }
+SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 # Keep the new secret's keyId: removePassword needs it if a later step fails
-NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' secret.json)
+NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
 [ -n "$SECRET" ] && [ -n "$NEW_SECRET_KEY_ID" ] \
-  || { rm -f secret.json; echo "ERROR: addPassword response has no secretText or keyId."; exit 1; }
+  || { echo "ERROR: addPassword response has no secretText or keyId."; exit 1; }
 echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
 
 # Assemble credentials (appId and tenant are the same for all team members).
@@ -424,8 +430,6 @@ echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
   --arg tenant "$TENANT_ID" \
   --arg keyId "$NEW_SECRET_KEY_ID" \
   '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
-
-rm -f secret.json
 ```
 
 **Note:** The `.cloud-config.json` for Azure should also store `tenant` alongside the other fields.

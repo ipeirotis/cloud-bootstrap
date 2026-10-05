@@ -55,7 +55,7 @@ Using the bootstrap token and provider-specific commands from the reference file
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
-   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+   printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
      -pass stdin \
      -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
    ```

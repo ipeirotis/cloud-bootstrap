@@ -44,7 +44,7 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    fi
 
    trap 'rm -f /tmp/credentials.json' EXIT
-   if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
+   if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
      -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
      echo "WARNING: Failed to decrypt $PROVIDER credentials — check your credentials key or .enc file integrity."
@@ -59,5 +59,5 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    fi
    ```
 8. Activate using the provider-specific commands from the reference file.
-9. **Delete `/tmp/credentials.json` immediately after activation** (the `trap EXIT` ensures cleanup even on failure).
+9. **Delete `/tmp/credentials.json` immediately after activation** (the `trap EXIT` ensures cleanup even on failure). This is only the temporary copy from step 7. For GCP, activation decrypts its own session copy to `/tmp/gcp-adc-credentials.json` for Python clients (`GOOGLE_APPLICATION_CREDENTIALS`); keep that one for the session.
 10. **Verify credentials work** by running the smoke test command from the provider reference file (see "Verify (Smoke Test)" section). If the smoke test fails, inform the user that credentials may be expired or revoked and suggest re-running setup.
