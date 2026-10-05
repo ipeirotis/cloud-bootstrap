@@ -24,6 +24,9 @@ done
 
 mkdir -p "$DEST"
 cp -R "$TMP/files/." "$DEST/"
+# Record which files this release installed, so update.sh can remove the ones
+# a later release drops
+printf '%s\n' $FILES > "$DEST/.installed-files"
 
 INSTALLED_VERSION=$(tr -d '[:space:]' < "$DEST/VERSION")
 INSTALLED_VERSION="${INSTALLED_VERSION:-unknown}"

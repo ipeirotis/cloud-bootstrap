@@ -36,8 +36,11 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
 5. Verify the **new** key works before touching the old one. The provider smoke test alone is not enough: the CLI is still logged in as the old key (or the bootstrap admin), so it would pass without using the replacement. Activate `credentials.json` in an isolated config and confirm the caller identity:
-   - **GCP** (a new key can take a minute or more to work, so retry with backoff before giving up; `PROJECT_ID`, `SA_EMAIL`, and `TOKEN` as in "Create Key"):
+   - **GCP** (a new key can take a minute or more to work, so retry with backoff before giving up; `TOKEN` is the bootstrap token):
      ```bash
+     PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+     SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+     [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
      NEW_KEY_ID=$(jq -r .private_key_id credentials.json)
      TMPCFG=$(mktemp -d); VERIFIED=""
      for delay in 0 10 20 40 80; do
@@ -150,6 +153,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
    - **GCP:** delete the old key, failing on any HTTP error so a rejected delete is not mistaken for a revoked key, and clear its `revoke_pending` entry only once Google confirms. From a fresh shell, the ID comes from that entry:
      ```bash
+     # Re-resolve everything from config: this may run in a fresh shell
+     PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+     SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+     [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
      USER_EMAIL=$(git config user.email)
      OLD_KEY_ID="${OLD_KEY_ID:-$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .revoke_pending[$e] // empty' .cloud-config.json)}"
      [ -n "$OLD_KEY_ID" ] || { echo "ERROR: no OLD_KEY_ID in this shell or in revoke_pending."; exit 1; }

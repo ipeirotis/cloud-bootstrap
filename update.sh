@@ -99,7 +99,19 @@ for FILE in $FILES; do
   curl -fsSL "$REPO_URL/$FILE" -o "$TMP/files/$FILE"
 done
 mkdir -p "$DEST"
+# Remove files the previous release installed that this release no longer
+# ships, so a dropped or renamed workflow does not linger. Only paths listed
+# in the recorded file list are touched; installs older than that list have
+# none, and nothing is removed for them.
+if [ -f "$DEST/.installed-files" ]; then
+  while IFS= read -r OLD; do
+    case "$OLD" in ''|/*|*..*) continue ;; esac
+    printf '%s\n' $FILES | grep -qxF -- "$OLD" || rm -f -- "$DEST/$OLD"
+  done < "$DEST/.installed-files"
+  find "$DEST" -mindepth 1 -type d -empty -delete
+fi
 cp -R "$TMP/files/." "$DEST/"
+printf '%s\n' $FILES > "$DEST/.installed-files"
 
 # Commit only the skill directory, leaving any other staged changes alone.
 git add -- "$DEST"
