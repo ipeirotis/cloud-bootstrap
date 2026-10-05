@@ -567,7 +567,8 @@ for ID in $IDS; do
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
         | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
         | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
-        | (if .rotating[$e] == $id then del(.rotating[$e]) else . end);
+        | (if .rotating[$e] == $id then del(.rotating[$e]) else . end)
+        | del(.revoked_early[$e]);   # its key is gone; a rejoining member starts fresh
       .unrevoked = [(.unrevoked // [])[] | select(.provider != "gcp" or .member != $e or (.id | split("/") | last) != $id)]
       | if .unrevoked == [] then del(.unrevoked) else . end
       | if .providers then .providers |= map(if .provider == "gcp" then clr else . end)

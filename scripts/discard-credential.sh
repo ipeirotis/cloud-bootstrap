@@ -89,6 +89,33 @@ case "$PROVIDER" in
     if [ -n "$AK" ]; then
       if OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
       then U="$OUT"; else LOOKUP="$OUT"; fi
+    elif [ "$MODE" = key ] && [ -n "$(cfg "rotating[\"$USER_EMAIL\"]")" ]; then
+      # Rotation with no key ID (interrupted before create-access-key's output
+      # was saved). Step 3 recorded the current key in rotating; every other
+      # key of this member's user that the config does not name is the lost
+      # replacement, which nobody holds.
+      PREFIX="$(cfg iam_user_prefix)"; PREFIX="${PREFIX:-claude-agent}"
+      H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
+      if [ "$PREFIX" = "claude-agent" ]; then
+        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+      else
+        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+        [ "$N" = "$PREFIX-$USER_EMAIL" ] || N="${N:0:55}-$H"
+      fi
+      [ ${#N} -le 64 ] || N="${N:0:55}-$H"
+      KNOWN=$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider == "aws")) else . end)
+        | [.rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]' "$CONFIG")
+      if KEYS=$(aws iam list-access-keys --user-name "$N" --query 'AccessKeyMetadata[].AccessKeyId' --output text); then
+        OK=1; AK=""
+        for k in $KEYS; do
+          printf '%s\n' $KNOWN | grep -qxF "$k" && continue
+          aws iam delete-access-key --user-name "$N" --access-key-id "$k" && AK="$AK $k" || OK=0
+        done
+        if [ "$OK" = 1 ]; then echo "Removed unrecorded key(s) of $N:${AK:- none}."; STATUS=0
+        else record_unrevoked "unrecorded keys of $N" "rotation lost the new key's ID"; fi
+        rm -f "$CREDS" credentials_clean.json; exit "$STATUS"
+      fi
+      LOOKUP="could not list keys of $N"; AK="(new key of $N)"
     elif [ "$MODE" = member ]; then
       # No key ID (interrupted before create-access-key's output was saved):
       # the new member's user is the repo-scoped name for this email, as

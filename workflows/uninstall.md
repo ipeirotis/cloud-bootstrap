@@ -31,7 +31,11 @@ To completely remove cloud-bootstrap from a repo:
          | if .hooks == {} then del(.hooks) else . end' .claude/settings.json > .claude/settings.json.tmp \
        && mv .claude/settings.json.tmp .claude/settings.json
      ```
-5. **Clean up `.gitignore`:** Remove the rules setup added: the `# Cloud -- never commit plaintext credentials` comment, `/credentials.json`, and `/credentials_clean.json`. Older setups wrote `credentials.json`, `credentials_clean.json`, and `/tmp/` instead; remove those if present.
+5. **Delete any plaintext an interrupted run left, then clean up `.gitignore`:** these files are ignored only until the next step removes the rules, and a later `git add -A` would commit a live key. (Step 1's revocation covers the credentials in them; for one not listed anywhere, run "Recovering an Interrupted Run" in SKILL.md first.)
+   ```bash
+   rm -f credentials.json credentials_clean.json .cloud-setup-pending.json .cloud-credentials.*.tmp.*
+   ```
+   Then remove the rules setup added: the `# Cloud -- never commit plaintext credentials` comment, `/credentials.json`, `/credentials_clean.json`, and `/.cloud-setup-pending.json`. Older setups wrote `credentials.json`, `credentials_clean.json`, and `/tmp/` instead; remove those if present. Check `git status --porcelain --ignored` shows none of these files before committing.
 6. **Remove the `## Cloud Credentials` section from the repo's agent-instructions file(s)** — `CLAUDE.md`, `AGENTS.md`, or both; check each (`grep -n '^## Cloud Credentials' CLAUDE.md AGENTS.md`) and delete that section, up to the next `## ` heading, wherever it appears.
 7. **Commit all changes.**
 

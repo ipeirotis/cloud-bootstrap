@@ -301,9 +301,10 @@ rollback_aws_setup() {
 
 # Record the names before creating anything (not secret), so "Rollback a
 # Failed Setup" can find them from any shell if this run stops part-way
-pending() { jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
-  '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
-  > .cloud-setup-pending.json; }
+pending() {   # written whole to a temp file, then renamed: never left half-written
+  jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
+    '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
+    > .cloud-setup-pending.json.tmp && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; }
 pending || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 
 # Create this repo's group; an existing group of that name belongs to another
@@ -314,14 +315,22 @@ if ! aws iam create-group --group-name "$GROUP_NAME"; then
   exit 1
 fi
 
+# Record the user before creating it, so an interruption right after
+# create-user is still recovered. Only a name confirmed absent is recorded,
+# and the record drops it again if create-user fails, so a pre-existing user
+# of that name is never one the rollback deletes.
+if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  echo "ERROR: IAM user $IAM_USER already exists (or the lookup failed); rolling back."
+  rollback_aws_setup; exit 1
+fi
+pending "$IAM_USER" || { echo "ERROR: could not update .cloud-setup-pending.json; rolling back."; rollback_aws_setup; exit 1; }
 # Create the user and add to group; on any failure, roll back and stop
 if ! aws iam create-user --user-name "$IAM_USER"; then
+  pending ""
   echo "ERROR: could not create IAM user $IAM_USER (it may already exist); rolling back."
   rollback_aws_setup; exit 1
 fi
 CREATED_USER=1
-# The user is ours now: record it too (a pre-existing user of that name never is)
-pending "$IAM_USER" || { echo "ERROR: could not update .cloud-setup-pending.json; rolling back."; rollback_aws_setup; exit 1; }
 aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
   || { echo "ERROR: add-user-to-group failed; rolling back."; rollback_aws_setup; exit 1; }
 
@@ -451,7 +460,8 @@ rollback_member() {
 # rollback removes this user, never the shared group), so an interruption
 # before credentials.json exists is still recovered from any shell
 jq -n --arg a "$AWS_ACCOUNT_ID" --arg u "$IAM_USER" \
-  '{provider: "aws", member_only: true, account: $a, iam_user: $u}' > .cloud-setup-pending.json \
+  '{provider: "aws", member_only: true, account: $a, iam_user: $u}' > .cloud-setup-pending.json.tmp \
+  && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json \
   || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 # Create user and add to the existing group. Stop unless create-user succeeds:
 # EntityAlreadyExists (409) means a user of this name already exists, and
@@ -650,7 +660,7 @@ fi
 git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 # (deleting the user removed every key it had, including any recorded as unrevoked)
 jq --arg e "$MEMBER_EMAIL" '
-  def clr: del(.revoke_pending[$e]) | del(.rotating[$e]);
+  def clr: del(.revoke_pending[$e]) | del(.rotating[$e]) | del(.revoked_early[$e]);
   .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .member != $e)]
   | if .unrevoked == [] then del(.unrevoked) else . end
   | if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
