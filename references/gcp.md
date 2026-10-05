@@ -56,6 +56,8 @@ set -e
 # local machine the fixed key path and gcloud's active account would leak
 # between concurrent sessions, so local users keep their own gcloud login.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+# Hooks run in the session's current directory, which may be a subdirectory
+cd "${CLAUDE_PROJECT_DIR:-.}"
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"

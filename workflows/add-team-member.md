@@ -46,11 +46,40 @@ Using the bootstrap token and provider-specific commands:
      fi
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else
+     PROVIDER=$(jq -r .provider .cloud-config.json)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
-   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-     -pass stdin \
-     -in credentials.json -out "$ENC_FILE"
+   if ! echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+        -pass stdin \
+        -in credentials.json -out "$ENC_FILE"; then
+     # The provider-side credential is live but unusable: revoke it, then drop
+     # the plaintext, so nothing active and untracked is left behind.
+     rm -f "$ENC_FILE"
+     echo "ERROR: encryption failed; revoking the new $PROVIDER credential."
+     case "$PROVIDER" in
+       gcp)
+         KEY_ID=$(jq -r .private_key_id credentials.json)
+         PROJECT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .project_id // empty' .cloud-config.json)
+         SA_EMAIL=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .service_account // empty' .cloud-config.json)
+         curl -sS --fail -X DELETE \
+           "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$KEY_ID" \
+           -H "Authorization: Bearer $TOKEN" >/dev/null \
+           || echo "WARNING: could not delete key $KEY_ID; delete it via Key Management in references/gcp.md." ;;
+       azure)
+         # OBJECT_ID and NEW_SECRET_KEY_ID were printed by Add Client Secret
+         STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+           "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
+           -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
+           -d "{\"keyId\": \"$NEW_SECRET_KEY_ID\"}")
+         [ "$STATUS" = "204" ] \
+           || echo "WARNING: could not remove secret $NEW_SECRET_KEY_ID (HTTP $STATUS); remove it via Secret Management in references/azure.md." ;;
+       aws)
+         echo "Run the standalone member rollback in references/aws.md (Add Team Member) now: it deletes the new user and its keys." ;;
+     esac
+     # Key IDs are printed above; the plaintext secret is never kept
+     rm -f credentials.json
+     exit 1
+   fi
    ```
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves. Run it before the next step: it reads the ID from `credentials.json` (or, failing that, from the encrypted file).

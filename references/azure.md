@@ -42,6 +42,8 @@ set -e
 # concurrent sessions would overwrite each other's principal and subscription;
 # local users keep their own `az login`.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+# Hooks run in the session's current directory, which may be a subdirectory
+cd "${CLAUDE_PROJECT_DIR:-.}"
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
@@ -433,7 +435,7 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Delete their `.cloud-credentials.<email>.enc` file only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
+Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Delete their credential file (`.cloud-credentials.azure.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`) only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
 
 ```bash
 KEY_ID="KEY_ID_TO_REMOVE"
@@ -444,7 +446,7 @@ STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
   -H "Content-Type: application/json" \
   -d "{\"keyId\": \"$KEY_ID\"}")
 if [ "$STATUS" = "204" ]; then
-  echo "Secret $KEY_ID removed; now delete the member's .cloud-credentials.<email>.enc file."
+  echo "Secret $KEY_ID removed; now delete the member's credential file (.cloud-credentials.azure.<email>.enc in multi-provider repos, else .cloud-credentials.<email>.enc)."
 else
   echo "ERROR: removePassword returned HTTP $STATUS; the secret may still be active. Keep the .enc file and retry."
   exit 1

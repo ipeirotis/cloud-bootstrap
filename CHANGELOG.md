@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 
 ### Security
-- SessionStart hooks (GCP, Azure, multi-provider) run only in Claude Code on the Web (`CLAUDE_CODE_REMOTE=true`). Locally, the fixed decrypted-key path and the shared gcloud/az config let concurrent sessions overwrite each other's identity.
+- SessionStart hooks (GCP, AWS, Azure, multi-provider) run only in Claude Code on the Web (`CLAUDE_CODE_REMOTE=true`). Locally, the fixed decrypted-key path and the shared gcloud/az config let concurrent sessions overwrite each other's identity, and the AWS hook would replace the developer's own AWS identity.
 - GCP hooks clear `CLOUDSDK_AUTH_ACCESS_TOKEN` (and persist the unset) before any early exit; it outranks the activated service account.
 - AWS hooks clear stale `AWS_SESSION_TOKEN`/`AWS_PROFILE` before using long-lived IAM-user keys.
 - Credential rotation: after a suspected compromise, revoke the old key at once (step 9), not step 6; verify the replacement in an isolated config with a caller-identity check before revoking; re-encrypt to a temp file, verify, then rename, so a failed write never destroys the current credential.
@@ -42,6 +42,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- Add Team Member revokes the new GCP key, Azure secret, or AWS user when encryption fails, and always removes the plaintext.
+- All hook templates `cd` to `$CLAUDE_PROJECT_DIR` first, so a session started in a subdirectory still authenticates.
+- AWS and Azure offboarding name the provider-prefixed credential file in multi-provider repos.
 - `install.sh` records the installed file list in `.installed-files`; `update.sh` removes files the previous release installed that the new one no longer ships.
 - Rotation keeps the old GCP key ID in `revoke_pending` until Google confirms its deletion, and its GCP verify and revoke snippets resolve the project and service account from config themselves; AWS verification retries with backoff and deletes the new access key on final failure; Azure verification failure removes the new secret by the `keyId` that Add Client Secret now keeps.
 - Config lookups use top-level fields only when the top-level `provider` matches, so while a second provider is provisioned the snippets never pick up the first provider's project or identity; the migration steps say which values to set.

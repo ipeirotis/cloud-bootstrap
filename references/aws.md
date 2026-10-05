@@ -55,6 +55,13 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
+# Claude Code on the Web only: each session is its own container. Locally this
+# would replace the developer's own AWS identity for the session with the
+# repo's, so local users keep their own credentials.
+if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+# Hooks run in the session's current directory, which may be a subdirectory
+cd "${CLAUDE_PROJECT_DIR:-.}"
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -490,7 +497,7 @@ aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER
 aws iam delete-user --user-name "$IAM_USER"
 ```
 
-Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.
+Also remove the member's credential file from the repo: `.cloud-credentials.aws.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`.
 
 ## Common Policies Reference
 
