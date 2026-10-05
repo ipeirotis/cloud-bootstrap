@@ -10,7 +10,7 @@ The user needs **Application Administrator** (or **Cloud Application Administrat
 
 ## Key Limits
 
-Azure allows **unlimited client secrets per app registration**. Each team member gets their own client secret for the same application/service principal. No practical team size limit.
+Each team member gets their own client secret on the same application/service principal. The number is **not unlimited**: Microsoft caps the entries across an application's manifest collections, `passwordCredentials` included, at a shared total ([manifest limits](https://learn.microsoft.com/en-us/entra/identity-platform/reference-app-manifest#manifest-limits)), so secrets left behind by departed members and rotations count against it. Add Team Member lists the existing secrets first; remove expired or departed members' secrets (see "Secret Management") before adding more.
 
 ## CLI Installation
 
@@ -94,7 +94,13 @@ if ! az login --service-principal \
   echo "WARNING: az login failed — credentials may be revoked."
   exit 0
 fi
-az account set --subscription "$(jq -r .project_id "$CONFIG" 2>/dev/null)" 2>/dev/null || true
+# Without the configured subscription, commands would silently run against
+# whatever default az login picked: treat a failed switch as a failed login.
+if ! az account set --subscription "$(jq -r .project_id "$CONFIG" 2>/dev/null)" 2>/dev/null; then
+  echo "WARNING: could not select the configured Azure subscription — logging out; check project_id and the service principal's access."
+  az logout 2>/dev/null || true
+  exit 0
+fi
 
 # Persist the resolved az CLI path for the rest of the session. Without this,
 # later shells can have a valid cached Azure login but still hit
@@ -363,36 +369,40 @@ Prefer scoping roles to specific resource groups rather than the entire subscrip
 When a new team member joins, create a new client secret for the existing app. Read the `appId` from `.cloud-config.json` (stored as `service_account`).
 
 ```bash
-# Get the app's object ID from its appId (requires $GRAPH_TOKEN). In
-# multi-provider mode the appId is stored as service_account inside the matching
-# providers[] entry, not at the top level.
-APP_ID=$(jq -r 'if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end' .cloud-config.json)
-OBJECT_ID=$(curl -s -G "https://graph.microsoft.com/v1.0/applications" \
+# Resolve and validate everything BEFORE creating a secret, so a bad config
+# never leaves a live secret behind (provider-aware: in multi-provider mode
+# these live in the matching providers[] entry).
+azcfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"azure\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+APP_ID=$(azcfg service_account)
+TENANT_ID="${TENANT_ID:-$(azcfg tenant)}"
+[ -n "$APP_ID" ] || { echo "ERROR: no Azure service_account (appId) in .cloud-config.json."; exit 1; }
+[ -n "$TENANT_ID" ] || { echo "ERROR: Azure tenant ID not found in .cloud-config.json — ask the user and set TENANT_ID."; exit 1; }
+OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=appId eq '$APP_ID'" \
-  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+[ -n "$OBJECT_ID" ] || { echo "ERROR: could not resolve the application for appId $APP_ID."; exit 1; }
+
+# Existing secrets count against the application's credential limit (see Key Limits)
+curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '"existing secrets: \(.passwordCredentials | length)"'
 
 USER_EMAIL=$(git config user.email)
 
-# Add a new client secret labeled with the user's email
-curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
+# Add a new client secret labeled with the user's email; fail on HTTP errors
+(umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
-  > secret.json
+  > secret.json) || { rm -f secret.json; echo "ERROR: addPassword failed; no secret was created."; exit 1; }
+SECRET=$(jq -r '.secretText // empty' secret.json)
+[ -n "$SECRET" ] || { rm -f secret.json; echo "ERROR: addPassword response has no secretText."; exit 1; }
 
-# Assemble credentials (appId and tenant are the same for all team members).
-# Read tenant provider-aware; never persist a placeholder — stop and ask if absent.
-TENANT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .tenant) else .tenant end) // empty' .cloud-config.json 2>/dev/null)
-if [ -z "$TENANT_ID" ]; then
-  echo "ERROR: Azure tenant ID not found in .cloud-config.json — ask the user and set TENANT_ID."
-  exit 1
-fi
-jq -n \
+# Assemble credentials (appId and tenant are the same for all team members)
+(umask 077 && jq -n \
   --arg appId "$APP_ID" \
-  --arg password "$(jq -r .secretText secret.json)" \
+  --arg password "$SECRET" \
   --arg tenant "$TENANT_ID" \
-  '{appId: $appId, password: $password, tenant: $tenant}' \
-  > credentials.json
+  '{appId: $appId, password: $password, tenant: $tenant}' > credentials.json)
 
 rm -f secret.json
 ```
@@ -401,23 +411,36 @@ rm -f secret.json
 
 ## Secret Management
 
-List client secrets for the app (requires `$GRAPH_TOKEN`):
+Resolve the application first (later sessions have no `OBJECT_ID` in scope), then list its client secrets (requires `$GRAPH_TOKEN`):
 
 ```bash
-curl -s "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json)
+OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+  --data-urlencode "\$filter=appId eq '$APP_ID'" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+[ -n "$OBJECT_ID" ] || { echo "ERROR: could not resolve the application for appId '$APP_ID'."; exit 1; }
+
+curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a specific client secret (if a team member leaves):
+Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Delete their `.cloud-credentials.<email>.enc` file only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
 
 ```bash
-curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
+KEY_ID="KEY_ID_TO_REMOVE"
+[ -n "$OBJECT_ID" ] && [ -n "$KEY_ID" ] || { echo "ERROR: resolve OBJECT_ID and set KEY_ID first."; exit 1; }
+STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"keyId": "KEY_ID_TO_REMOVE"}'
+  -d "{\"keyId\": \"$KEY_ID\"}")
+if [ "$STATUS" = "204" ]; then
+  echo "Secret $KEY_ID removed; now delete the member's .cloud-credentials.<email>.enc file."
+else
+  echo "ERROR: removePassword returned HTTP $STATUS; the secret may still be active. Keep the .enc file and retry."
+  exit 1
+fi
 ```
-
-Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.
 
 ## Activate (Subsequent Sessions)
 
@@ -431,7 +454,8 @@ az login --service-principal \
 
 # Provider-aware subscription: in multi-provider repos the subscription id is in
 # the matching providers[] entry, not at top-level .project_id.
-az account set --subscription "$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end)' .cloud-config.json)"
+az account set --subscription "$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end)' .cloud-config.json)" \
+  || { az logout; rm -f /tmp/credentials.json; echo "ERROR: could not select the configured subscription."; exit 1; }
 
 rm -f /tmp/credentials.json
 ```

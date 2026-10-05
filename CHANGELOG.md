@@ -36,6 +36,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation: the AWS compromise path derives `IAM_USER` before revoking; the GCP and Azure isolated verifications keep their failure status instead of ending on the cleanup.
 - AWS first-time setup rolls back the group/user/keys it created when a later step fails, and policy grants derive the group in their own snippet.
 - The multi-provider loop sketch in Authenticate is valid bash (its `if` body was only a comment).
+- Azure hooks treat a failed `az account set` as a failed login (log out, report it) instead of running against the default subscription.
+- Azure Add Team Member validates the tenant and resolves the application before `addPassword`, fails on HTTP errors, and requires `secretText`; Secret Management resolves the application itself and deletes a member's `.enc` only after `removePassword` returns 204.
+- Key Limits no longer claims unlimited client secrets: entries count against a shared per-application manifest limit, so add-member lists existing secrets and prunes first.
 - Azure service-principal names are a sanitized repo slug plus a random per-run suffix: safe inside JSON and OData strings, and concurrent setups can no longer race to the same name (which `create-for-rbac` would reuse).
 - Azure REST setup documents a "Rollback a Failed Setup" step (delete the half-created application and the local plaintext) for failures after the creation block, whose trap cannot span later snippets; first-time setup says to undo a created identity before retrying on every provider.
 - GCP service-account creation fails on any HTTP error (409 = the account already exists) instead of continuing to grant roles and create keys for a pre-existing account.

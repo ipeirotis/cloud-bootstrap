@@ -215,7 +215,11 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "WARNING: az login failed — skipping Azure."
         rm -f /tmp/credentials.json; continue
       fi
-      az account set --subscription "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null || true
+      if ! az account set --subscription "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null; then
+        echo "WARNING: could not select the configured Azure subscription — logging out of Azure."
+        az logout 2>/dev/null || true
+        rm -f /tmp/credentials.json; continue
+      fi
       ;;
   esac
 
