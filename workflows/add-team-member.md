@@ -69,13 +69,21 @@ Using the bootstrap token and provider-specific commands:
            -H "Authorization: Bearer $TOKEN" >/dev/null \
            || pending "key $KEY_ID of $SA_EMAIL (delete via Key Management in references/gcp.md)" ;;
        azure)
-         # OBJECT_ID and NEW_SECRET_KEY_ID were printed by Add Client Secret
+         # Re-resolve from config and Graph: this may run in a fresh shell.
+         # The new secret is the newest one carrying this member's label.
+         APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure")) else . end) | .service_account // empty' .cloud-config.json)
+         OBJECT_ID="${OBJECT_ID:-$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+           --data-urlencode "\$filter=appId eq '$APP_ID'" \
+           -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')}"
+         NEW_SECRET_KEY_ID="${NEW_SECRET_KEY_ID:-$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+           -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$USER_EMAIL" \
+           '[.passwordCredentials[] | select(.displayName == $n)] | sort_by(.startDateTime) | last | .keyId // empty')}"
          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
            "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
            -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
            -d "{\"keyId\": \"$NEW_SECRET_KEY_ID\"}")
-         [ "$STATUS" = "204" ] \
-           || pending "secret $NEW_SECRET_KEY_ID of app object $OBJECT_ID (HTTP $STATUS; remove via Secret Management in references/azure.md)" ;;
+         [ -n "$OBJECT_ID" ] && [ -n "$NEW_SECRET_KEY_ID" ] && [ "$STATUS" = "204" ] \
+           || pending "secret '${NEW_SECRET_KEY_ID:-labelled claude-code-$USER_EMAIL}' of app $APP_ID (HTTP $STATUS; remove via Secret Management in references/azure.md)" ;;
        aws)
          # Find the user from the new key itself, then remove keys, groups, user
          AK=$(jq -r '.access_key_id // .AccessKey.AccessKeyId // empty' credentials.json)

@@ -148,8 +148,12 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    OLD_KEY_ID="${OLD_KEY_ID:-$(gcpcfg '.key_ids[$e]')}"
    [ "${OLD_KEY_REVOKED:-}" = 1 ] && OLD_KEY_ID=""     # revoked early (compromise path)
    [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
+   # Never overwrite key_ids without a record of the key it replaces (configs
+   # older than key_ids have none): stop unless the old key is known or was
+   # already revoked
    if [ -z "$OLD_KEY_ID" ] && [ "${OLD_KEY_REVOKED:-}" != 1 ]; then
-     echo "WARNING: no old key ID known. Unless the old key was already revoked (compromise path), list keys (Key Management), set OLD_KEY_ID, and re-run this step."
+     echo "ERROR: no old key ID known; nothing changed. List keys (Key Management), set OLD_KEY_ID to this member's previous key (or OLD_KEY_REVOKED=1 if it is already deleted), and re-run this step."
+     exit 1
    fi
    jq --arg e "$USER_EMAIL" --arg new "$NEW_KEY_ID" --arg old "${OLD_KEY_ID:-}" '
      def upd: .key_ids[$e] = $new
