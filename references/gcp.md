@@ -248,6 +248,9 @@ case $S in
   0) echo "ERROR: $SA_ID already exists; choose another accountId with the user."; exit 1 ;;
   2) echo "ERROR: could not check whether $SA_ID exists; nothing created."; exit 1 ;;
 esac
+# The record must never be committed: make sure .gitignore covers it (setups
+# made before it existed lack the rule)
+grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
 # Record the account before creating it (not secret), so "Rollback a Failed
 # Setup" can find it from any shell if this run stops part-way
 jq -n --arg p "$PROJECT_ID" --arg s "$SA_ID@$PROJECT_ID.iam.gserviceaccount.com" \
@@ -564,6 +567,8 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
   ([.unrevoked[]? | select(.provider == "gcp" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
   | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
+# A member added before key_ids existed: the key found from the listing
+IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
   # A compromise rotation may already have deleted the member's only
   # credential (revoked_early, no replacement): nothing is live, so clear the

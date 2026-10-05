@@ -208,6 +208,9 @@ if [ -n "$SP_HITS" ] || [ -n "$APP_HITS" ]; then
   exit 1
 fi
 
+# The record must never be committed: make sure .gitignore covers it (setups
+# made before it existed lack the rule)
+grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way
@@ -284,6 +287,9 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value | length')
 [ "$EXISTING" = "0" ] || { echo "ERROR: an application named $SP_NAME already exists (or the lookup failed); choose another name with the user."; exit 1; }
+# The record must never be committed: make sure .gitignore covers it (setups
+# made before it existed lack the rule)
+grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way

@@ -69,7 +69,9 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 clear_prior_aws() {
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
     sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
-    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+    # A profile or session token left selected would let later commands
+    # authenticate as something else instead of failing
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN" >> "$CLAUDE_ENV_FILE"
   fi
 }
 trap '[ "${AWS_ACTIVATED:-}" = 1 ] || clear_prior_aws; rm -f /tmp/credentials.json' EXIT
@@ -163,7 +165,7 @@ fi
 # not found".
 if [ -n "$CLAUDE_ENV_FILE" ]; then
   # Drop an unset an earlier failed run left, so the exports below take effect
-  sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
+  sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
   echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
@@ -315,6 +317,9 @@ rollback_aws_setup() {
 
 # Record the names before creating anything (not secret), so "Rollback a
 # Failed Setup" can find them from any shell if this run stops part-way
+# The record must never be committed: make sure .gitignore covers it (setups
+# made before it existed lack the rule)
+grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
 pending() {   # written whole to a temp file, then renamed: never left half-written
   jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
     '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
@@ -323,9 +328,21 @@ pending || { echo "ERROR: could not write .cloud-setup-pending.json; nothing cre
 
 # Create this repo's group; an existing group of that name belongs to another
 # setup, so stop rather than share it
-if ! aws iam create-group --group-name "$GROUP_NAME"; then
+# The name must be free first, so a group found after a failed call is ours
+if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
   rm -f .cloud-setup-pending.json
-  echo "ERROR: could not create IAM group $GROUP_NAME (it may already exist); choose another name with the user."
+  echo "ERROR: IAM group $GROUP_NAME already exists (or the lookup failed); choose another name with the user."
+  exit 1
+fi
+if ! aws iam create-group --group-name "$GROUP_NAME"; then
+  # A lost response can hide a group that was created: keep the record unless
+  # the group is confirmed absent
+  if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+    echo "ERROR: create-group failed and $GROUP_NAME may exist; run Rollback a Failed Setup (the record is kept)."
+  else
+    rm -f .cloud-setup-pending.json
+    echo "ERROR: could not create IAM group $GROUP_NAME; nothing was created."
+  fi
   exit 1
 fi
 
@@ -470,6 +487,9 @@ rollback_member() {
   rm -f credentials.json
 }
 
+# The record must never be committed: make sure .gitignore covers it (setups
+# made before it existed lack the rule)
+grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
 # Record the member's user before creating it (not secret; member_only: a
 # rollback removes this user, never the shared group), so an interruption
 # before credentials.json exists is still recovered from any shell

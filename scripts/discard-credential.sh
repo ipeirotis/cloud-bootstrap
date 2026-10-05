@@ -106,13 +106,24 @@ case "$PROVIDER" in
       KNOWN=$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider == "aws")) else . end)
         | [.rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]' "$CONFIG")
       if KEYS=$(aws iam list-access-keys --user-name "$N" --query 'AccessKeyMetadata[].AccessKeyId' --output text); then
-        OK=1; AK=""
+        # The lost replacement is a key the config does not name. Nobody holds
+        # its secret, but an overlapping rotation of this member could have
+        # created such a key too, so record the candidates instead of deleting
+        AK=""
         for k in $KEYS; do
           printf '%s\n' $KNOWN | grep -qxF "$k" && continue
-          aws iam delete-access-key --user-name "$N" --access-key-id "$k" && AK="$AK $k" || OK=0
+          AK="$AK $k"
+          jq --arg id "$k" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
+            '.unrevoked = ((.unrevoked // []) + [{provider: "aws", id: $id, member: $m, ambiguous: true,
+               note: "unrecorded key from an interrupted rotation, or one an overlapping rotation created", at: $t}])' \
+            "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
         done
-        if [ "$OK" = 1 ]; then echo "Removed unrecorded key(s) of $N:${AK:- none}."; STATUS=0
-        else record_unrevoked "unrecorded keys of $N" "rotation lost the new key's ID"; fi
+        if [ -n "$AK" ]; then
+          echo "Unrecorded key(s) of $N:$AK (recorded as ambiguous under \"unrevoked\"; commit $CONFIG)."
+          echo "Delete each one no rotation of yours is using: aws iam delete-access-key --user-name $N --access-key-id <id>"
+        else
+          echo "No unrecorded key of $N exists; nothing was created."; STATUS=0
+        fi
         rm -f "$CREDS" credentials_clean.json; exit "$STATUS"
       fi
       LOOKUP="could not list keys of $N"; AK="(new key of $N)"

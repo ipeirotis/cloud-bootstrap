@@ -100,7 +100,9 @@ clear_prior_gcp() {
 clear_prior_aws() {
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
     sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
-    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+    # A profile or session token left selected would let later commands
+    # authenticate as something else instead of failing
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN" >> "$CLAUDE_ENV_FILE"
   fi
 }
 clear_prior_az() { command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true; }
@@ -267,7 +269,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         rm -f /tmp/credentials.json; continue
       fi
       if [ -n "$CLAUDE_ENV_FILE" ]; then
-        sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
+        sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
         echo "unset AWS_SESSION_TOKEN AWS_PROFILE" >> "$CLAUDE_ENV_FILE"
