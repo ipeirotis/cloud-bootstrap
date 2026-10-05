@@ -49,18 +49,30 @@ Using the bootstrap token and provider-specific commands:
      PROVIDER=$(jq -r .provider .cloud-config.json)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
-   if ! printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-        -pass stdin \
-        -in credentials.json -out "$ENC_FILE"; then
-     # The provider-side credential is live but unusable: revoke it (for AWS,
-     # with the member's new IAM user) and delete the plaintext. If revocation
-     # fails, the script records the ID under "unrevoked" in .cloud-config.json;
-     # commit that file so the record is kept.
-     rm -f "$ENC_FILE"
-     echo "ERROR: encryption failed; revoking the new $PROVIDER credential."
+   # On any failure or interruption before the encrypted file is in place, the
+   # provider-side credential is live but unusable: revoke it (for AWS, with the
+   # member's new IAM user) and delete the plaintext. If revocation fails, the
+   # script records the ID under "unrevoked" in .cloud-config.json; commit that.
+   discard_new() {
+     rm -f "${TMP_ENC:-}"
+     echo "ERROR: encryption did not complete; revoking the new $PROVIDER credential."
      TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
          bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
      exit 1
+   }
+   trap discard_new INT TERM
+   # Encrypt to a private temp file, prove it decrypts to the credential, and
+   # only then move it into place in one rename: a truncated file never appears
+   # under the final name (which would make the next session try Authenticate).
+   TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX") || discard_new
+   if printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
+        -in credentials.json -out "$TMP_ENC" \
+      && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
+        | cmp -s - credentials.json \
+      && mv -f "$TMP_ENC" "$ENC_FILE"; then
+     trap - INT TERM
+   else
+     discard_new
    fi
    ```
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.

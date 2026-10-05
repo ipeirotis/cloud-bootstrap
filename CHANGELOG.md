@@ -42,6 +42,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- Add Team Member encrypts to a temp file, verifies it and renames it into place; a failure or interruption revokes the new credential.
+- GCP Create Service Account checks the account is absent first and deletes it after an ambiguous create failure.
+- First-time setup adds the plaintext ignore rules before creating anything; adding Azure as a second provider records its `key_ids`.
 - GCP and Azure offboarding also revoke the member's `rotating` ID and any `unrevoked` entries recorded for them, clearing each record once gone.
 - The ambiguous-failure checks for GCP key and Azure secret creation capture curl's status with `if`/`else`, so they also run under `set -e`.
 - Rotation step 6 (and step 8) resolve and require the passphrase themselves, so a fresh shell never re-encrypts with an empty passphrase.

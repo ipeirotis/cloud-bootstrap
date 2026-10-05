@@ -190,8 +190,19 @@ All API calls use `curl -H "Authorization: Bearer $TOKEN"` against `https://` en
 # or creating keys for that pre-existing account would hand out an identity this
 # setup did not create. Agree a different accountId with the user instead.
 SA_ID="${SA_ID:-claude-agent}"
-RESP=$(mktemp)
-if ! curl -sS --fail -X POST \
+SA_URL="https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_ID@$PROJECT_ID.iam.gserviceaccount.com"
+sa_exists() {   # 0 = exists, 1 = absent (HTTP 404), 2 = could not tell
+  case "$(curl -sS -o /dev/null -w '%{http_code}' "$SA_URL" -H "Authorization: Bearer $TOKEN")" in
+    200) return 0 ;; 404) return 1 ;; *) return 2 ;;
+  esac
+}
+# It must not exist yet: anything found afterwards is then ours to remove
+sa_exists; case $? in
+  0) echo "ERROR: $SA_ID already exists; choose another accountId with the user."; exit 1 ;;
+  2) echo "ERROR: could not check whether $SA_ID exists; nothing created."; exit 1 ;;
+esac
+RESP=$(umask 077 && mktemp)
+if curl -sS --fail -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -200,9 +211,18 @@ if ! curl -sS --fail -X POST \
     "serviceAccount": {
       "displayName": "Claude Code Agent"
     }
-  }' > "$RESP"; then
+  }' > "$RESP"; then RC=0; else RC=$?; fi
+if [ "$RC" -ne 0 ]; then
   rm -f "$RESP"
-  echo "ERROR: service account creation failed (409 = it already exists); choose another accountId with the user."
+  # curl exit 22: Google rejected the request (409 = it already exists), so
+  # nothing was created. Any other failure is ambiguous: if the account now
+  # exists, this call made it, so delete it before stopping.
+  if [ "$RC" -ne 22 ] && sa_exists; then
+    curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
+      && echo "Removed $SA_ID, which the failed call had created." \
+      || echo "WARNING: could not delete $SA_ID; delete it by hand before retrying."
+  fi
+  echo "ERROR: service account creation failed (curl exit $RC); nothing is left to use."
   exit 1
 fi
 SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
