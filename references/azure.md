@@ -259,9 +259,12 @@ cleanup_failed_setup() {
       -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty') || APP_OBJECT_ID=""
   fi
   if [ -n "$APP_OBJECT_ID" ]; then
-    curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-      -H "Authorization: Bearer $GRAPH_TOKEN" >/dev/null \
-      || echo "WARNING: could not delete application $APP_OBJECT_ID; remove it in the portal."
+    if curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+         -H "Authorization: Bearer $GRAPH_TOKEN" >/dev/null; then
+      rm -f .cloud-setup-pending.json   # nothing of this setup is left
+    else
+      echo "WARNING: could not delete application $APP_OBJECT_ID; run Rollback a Failed Setup."
+    fi
   fi
   rm -f credentials.json
 }
@@ -354,6 +357,17 @@ if [ -z "$APP_OBJECT_ID" ]; then
   APP_OBJECT_ID=$(printf '%s' "${R:-}" | jq -r '.value[0].id // empty')
 fi
 [ "$LOOKUP_OK" = 1 ] || { echo "ERROR: could not look the application up; nothing deleted. Retry."; exit 1; }
+# A recorded object ID whose application is gone (an earlier cleanup deleted
+# it) means there is nothing left to roll back
+if [ -n "$APP_OBJECT_ID" ]; then
+  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+    -H "Authorization: Bearer $GRAPH_TOKEN")
+  case "$HTTP" in
+    200) ;;
+    404) APP_OBJECT_ID="" ;;
+    *) echo "ERROR: could not look the application up (HTTP $HTTP); nothing deleted. Retry."; exit 1 ;;
+  esac
+fi
 RB_OK=1
 if [ -n "$APP_OBJECT_ID" ]; then
   # Role assignments are not removed with the service principal (they linger as
@@ -640,7 +654,19 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
   | (if .providers then (.providers[] | select(.provider=="azure")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
-[ -n "$IDS" ] || { echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1; }
+if [ -z "$IDS" ]; then
+  # A compromise rotation may already have deleted the member's only
+  # credential (revoked_early, no replacement): nothing is live, so clear the
+  # member's local state directly
+  if [ -n "$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end) | .revoked_early[$e] // empty' .cloud-config.json)" ]; then
+    jq --arg e "$MEMBER_EMAIL" 'def clr: del(.revoked_early[$e]) | del(.key_ids[$e]) | del(.rotating[$e]) | del(.revoke_pending[$e]);
+      if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+    git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+    echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
+  fi
+  echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1
+fi
 FAILED=""
 # The app's current secret IDs: a secret it no longer lists is already gone
 # (an earlier attempt removed it, or its response was lost)

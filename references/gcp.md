@@ -134,21 +134,26 @@ fi
 # gcloud CLI auth store) can authenticate. It lives only in the ephemeral
 # sandbox, never in the repo (the repo only ever holds the encrypted .enc).
 ADC_KEY="/tmp/gcp-adc-credentials.json"
+# Decrypt to a new file and replace the key file only once the new key is
+# known good: until then the old file still names the earlier account, which
+# the EXIT trap needs in order to log it out if this run fails
+NEW_KEY="$ADC_KEY.new"
 if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY" 2>/dev/null); then
+  -pass stdin -in "$ENC_FILE" -out "$NEW_KEY" 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check GCP_CREDENTIALS_KEY or .enc file integrity."
-  rm -f "$ADC_KEY"
+  rm -f "$NEW_KEY"
   exit 0
 fi
 
 # Use the key only if it is for the configured service account: a stale or
 # copied file could hold a valid key for another account in the same project
 SA_CFG=$(jq -r '.service_account // empty' "$CONFIG" 2>/dev/null)
-if [ -z "$SA_CFG" ] || [ "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)" != "$SA_CFG" ]; then
+if [ -z "$SA_CFG" ] || [ "$(jq -r '.client_email // empty' "$NEW_KEY" 2>/dev/null)" != "$SA_CFG" ]; then
   echo "WARNING: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}; not activating it."
-  rm -f "$ADC_KEY"
+  rm -f "$NEW_KEY"
   exit 0
 fi
+mv -f "$NEW_KEY" "$ADC_KEY"
 
 if ! gcloud auth activate-service-account --key-file="$ADC_KEY" 2>/dev/null; then
   echo "WARNING: gcloud auth failed — credentials may be revoked."
@@ -323,12 +328,18 @@ else
   RB_OK=0; echo "WARNING: could not read the project policy; $SA_EMAIL's role bindings may remain."
 fi
 rm -rf "$WORK"
-HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" -H "Authorization: Bearer $TOKEN")
-case "$HTTP" in
-  200|404) echo "Service account $SA_EMAIL is deleted." ;;
-  *) RB_OK=0; echo "WARNING: could not delete $SA_EMAIL (HTTP $HTTP)." ;;
-esac
+# Delete the account only once its bindings are gone: afterwards Google
+# rewrites them as deleted-principal members this block can no longer match
+if [ "$RB_OK" = 1 ]; then
+  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" -H "Authorization: Bearer $TOKEN")
+  case "$HTTP" in
+    200|404) echo "Service account $SA_EMAIL is deleted." ;;
+    *) RB_OK=0; echo "WARNING: could not delete $SA_EMAIL (HTTP $HTTP)." ;;
+  esac
+else
+  echo "The service account is kept until its bindings are removed."
+fi
 if [ "$RB_OK" = 1 ]; then
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
 else
@@ -553,7 +564,19 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
   ([.unrevoked[]? | select(.provider == "gcp" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
   | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
-[ -n "$IDS" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
+if [ -z "$IDS" ]; then
+  # A compromise rotation may already have deleted the member's only
+  # credential (revoked_early, no replacement): nothing is live, so clear the
+  # member's local state directly
+  if [ -n "$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .revoked_early[$e] // empty' .cloud-config.json)" ]; then
+    jq --arg e "$MEMBER_EMAIL" 'def clr: del(.revoked_early[$e]) | del(.key_ids[$e]) | del(.rotating[$e]) | del(.revoke_pending[$e]);
+      if .providers then .providers |= map(if .provider == "gcp" then clr else . end) else clr end' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+    git rm -q --ignore-unmatch ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+    echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
+  fi
+  echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1
+fi
 # Each ID leaves the config only once Google confirms it is gone (deleted now,
 # or 404 because it already was); the .enc file goes only when every key is.
 FAILED=""

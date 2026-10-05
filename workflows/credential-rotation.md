@@ -201,7 +201,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    fi
    # A rerun after this step already succeeded (before the commit): rotating is
    # gone and the old ID is queued (or, GCP/Azure, key_ids names the new key)
-   if [ -z "${OLD_KEY_ID:-}" ] && [ -z "$(pcfg '.rotating[$e]')" ] \
+   if [ -z "${OLD_KEY_ID:-}" ] && [ -z "$(pcfg '.rotating[$e]')" ] && [ -z "$(pcfg '.revoked_early[$e]')" ] \
       && { [ -n "$(pcfg '(.revoke_pending[$e] // []) | if type == "string" then . else .[] end')" ] \
            || { [ "$PROVIDER" != aws ] && [ "$(pcfg '.key_ids[$e]')" = "$NEW_KEY_ID" ]; }; }; then
      echo "The swap is already recorded; commit $ENC_FILE and .cloud-config.json, then delete credentials.json and continue with step 9."
@@ -249,7 +249,18 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
          || { echo "ERROR: could not identify the bootstrap credentials' account; nothing revoked."; exit 1; }
        [ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
-         || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing revoked."; exit 1; } ;;
+         || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing revoked."; exit 1; }
+       # Only this member's keys: a mistyped or stale ID could name a teammate's.
+       # Same naming rule as references/aws.md ("IAM Names").
+       PREFIX=$(pcfg .iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
+       H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
+       if [ "$PREFIX" = "claude-agent" ]; then
+         WANT_USER="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+       else
+         WANT_USER="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+         [ "$WANT_USER" = "$PREFIX-$USER_EMAIL" ] || WANT_USER="${WANT_USER:0:55}-$H"
+       fi
+       [ ${#WANT_USER} -le 64 ] || WANT_USER="${WANT_USER:0:55}-$H" ;;
      gcp)
        PROJECT_ID=$(pcfg .project_id); SA_EMAIL=$(pcfg .service_account)
        [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: no GCP project/service account in config."; exit 1; } ;;
@@ -270,6 +281,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        aws)
          # The key's owner, from AWS itself; NoSuchEntity means it is already gone
          if OUT=$(aws iam get-access-key-last-used --access-key-id "$1" --query UserName --output text 2>&1); then
+           [ "$OUT" = "$WANT_USER" ] || { echo "ERROR: key $1 belongs to $OUT, not $WANT_USER; not revoking it."; return 1; }
            aws iam delete-access-key --user-name "$OUT" --access-key-id "$1"
          else
            printf '%s' "$OUT" | grep -q NoSuchEntity && echo "Key $1 no longer exists; clearing its record."

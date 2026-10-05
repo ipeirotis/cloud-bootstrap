@@ -482,8 +482,16 @@ jq -n --arg a "$AWS_ACCOUNT_ID" --arg u "$IAM_USER" \
 # continuing would hand this member that user's identity. Nothing was created
 # then, so there is nothing to roll back.
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  rm -f .cloud-setup-pending.json
-  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
+  # A lost response can hide a user that was created: keep the record unless
+  # the user is confirmed absent
+  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
+    echo "ERROR: create-user failed but $IAM_USER exists; if this run created it, run Rollback a Failed Setup (the record is kept), else resolve with the user."
+  elif printf '%s' "$OUT" | grep -q NoSuchEntity; then
+    rm -f .cloud-setup-pending.json
+    echo "ERROR: could not create IAM user $IAM_USER; nothing was created."
+  else
+    echo "ERROR: create-user failed and the user's state is unknown; the record is kept for Rollback a Failed Setup."
+  fi
   exit 1
 fi
 aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
@@ -577,8 +585,20 @@ rm -f /tmp/credentials.json
 # Persist nothing unless these keys are this member's user in this repo's
 # account (a stale or copied file could hold another account's or user's keys)
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
+iam_user_name() {   # $1 = email, $2 = user prefix (see "IAM Names")
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
+  printf '%s' "$n"
+}
 ACCOUNT=$(aws_cfg project_id); PREFIX=$(aws_cfg iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
-WANT_USER=$(iam_user_name "$(git config user.email)" "$PREFIX")   # helper from "IAM Names"
+WANT_USER=$(iam_user_name "$(git config user.email)" "$PREFIX")
 read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
 if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
