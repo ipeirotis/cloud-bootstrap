@@ -65,6 +65,10 @@ When converting to multi-provider, replace the single-provider `cloud-auth.sh` w
 #!/bin/bash
 set -e
 
+# Claude Code on the Web only (each session is its own container); see the
+# single-provider hook in references/gcp.md for why it skips local machines.
+if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
@@ -76,6 +80,16 @@ if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then exit 0; fi
 
 for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG" 2>/dev/null) || continue
+  if [ "$PROVIDER" = "gcp" ]; then
+    # Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which
+    # outranks the activated service account. Clear it for the session before
+    # any of the continue paths below.
+    unset CLOUDSDK_AUTH_ACCESS_TOKEN
+    if [ -n "$CLAUDE_ENV_FILE" ]; then
+      grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+        echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+    fi
+  fi
   ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
   if [ ! -f "$ENC_FILE" ]; then continue; fi
 
@@ -86,6 +100,15 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
     *)     KEY="$CLOUD_CREDENTIALS_KEY" ;;
   esac
   if [ -z "$KEY" ]; then continue; fi
+
+  # Per-file credential age, as in the Authenticate workflow
+  COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+  if [ -z "$COMMIT_TS" ]; then
+    COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
+  fi
+  if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
+    echo "NOTE: $PROVIDER credentials in $ENC_FILE are over 180 days old — consider rotating (see Credential Rotation)."
+  fi
 
   # Decrypt with restrictive permissions
   if ! (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
@@ -152,9 +175,12 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
       export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
       export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
+      # Long-lived IAM-user keys: drop any stale STS session token or profile
+      unset AWS_SESSION_TOKEN AWS_PROFILE
       if [ -n "$CLAUDE_ENV_FILE" ]; then
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
+        echo "unset AWS_SESSION_TOKEN AWS_PROFILE" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
         AWS_BIN="$(dirname "$(command -v aws)")"
         grep -qxF "export PATH=\"$AWS_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \

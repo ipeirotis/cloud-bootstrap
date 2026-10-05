@@ -1,12 +1,14 @@
 #!/bin/bash
 # Check for updates to cloud-bootstrap and optionally apply them.
 # Usage: curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/update.sh | bash
-#   or run from a repo that has cloud-bootstrap installed:
-#     bash .claude/skills/cloud-bootstrap/update.sh   (if bundled)
-set -e
+#   Non-interactive (no terminal available): ... | bash -s -- --yes
+# Always run it this way, so the newest updater and file list are used.
+set -euo pipefail
 
 REPO_URL="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main"
 DEST=".claude/skills/cloud-bootstrap"
+ASSUME_YES=0
+[ "${1:-}" = "--yes" ] && ASSUME_YES=1
 
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   echo "ERROR: Not inside a git repository. Run this from your repo root." >&2
@@ -18,7 +20,7 @@ INSTALLED_VERSION=""
 if [ -f "$DEST/VERSION" ]; then
   INSTALLED_VERSION=$(tr -d '[:space:]' < "$DEST/VERSION")
 elif [ -f "$DEST/SKILL.md" ]; then
-  INSTALLED_VERSION=$(grep -m1 '^version:' "$DEST/SKILL.md" 2>/dev/null | awk '{print $2}')
+  INSTALLED_VERSION=$(grep -m1 '^version:' "$DEST/SKILL.md" 2>/dev/null | awk '{print $2}' || true)
 fi
 
 if [ -z "$INSTALLED_VERSION" ]; then
@@ -30,8 +32,8 @@ fi
 
 echo "Installed version: $INSTALLED_VERSION"
 
-# Fetch latest version
-LATEST_VERSION=$(curl -sSL "$REPO_URL/VERSION" | tr -d '[:space:]')
+# Fetch latest version (fails on HTTP errors instead of reading an error body)
+LATEST_VERSION=$(curl -fsSL "$REPO_URL/VERSION" | tr -d '[:space:]')
 if [ -z "$LATEST_VERSION" ]; then
   echo "ERROR: Could not fetch latest version." >&2
   exit 1
@@ -50,7 +52,7 @@ echo "--- Changelog (new entries since $INSTALLED_VERSION) ---"
 echo ""
 
 # Fetch and display changelog, showing only entries newer than the installed version
-CHANGELOG=$(curl -sSL "$REPO_URL/CHANGELOG.md")
+CHANGELOG=$(curl -fsSL "$REPO_URL/CHANGELOG.md")
 echo "$CHANGELOG" | awk -v installed="$INSTALLED_VERSION" '
   /^## \[/ {
     # Extract version from heading like "## [1.2.0] - 2026-04-01"
@@ -67,41 +69,45 @@ echo ""
 echo "--- End of changelog ---"
 echo ""
 
-# If running interactively, ask for confirmation
-if [ -t 0 ]; then
-  printf "Update from %s to %s? [y/N] " "$INSTALLED_VERSION" "$LATEST_VERSION"
-  read -r REPLY
-  if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
-    echo "Update cancelled."
-    exit 0
+# Confirm before changing anything. Under `curl ... | bash`, stdin is the
+# script itself, so read the answer from the terminal; with no terminal at
+# all, require an explicit --yes rather than updating silently.
+if [ "$ASSUME_YES" -ne 1 ]; then
+  if { : < /dev/tty; } 2>/dev/null; then
+    printf "Update from %s to %s? [y/N] " "$INSTALLED_VERSION" "$LATEST_VERSION" > /dev/tty
+    read -r REPLY < /dev/tty
+    if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
+      echo "Update cancelled."
+      exit 0
+    fi
+  else
+    echo "No terminal to confirm on. Re-run with --yes to apply:"
+    echo "  curl -sSL $REPO_URL/update.sh | bash -s -- --yes"
+    exit 1
   fi
 fi
 
-# Perform update
+# Download the new release's full file list into a temp dir first; replace the
+# installed files only after every download succeeded.
 echo "Updating..."
-mkdir -p "$DEST/references" "$DEST/workflows"
-
-FILES="
-  SKILL.md
-  VERSION
-  references/gcp.md
-  references/aws.md
-  references/azure.md
-  workflows/first-time-setup.md
-  workflows/add-team-member.md
-  workflows/authenticate.md
-  workflows/credential-rotation.md
-  workflows/permission-escalation.md
-  workflows/multi-provider.md
-  workflows/uninstall.md
-"
-
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+curl -fsSL "$REPO_URL/MANIFEST" -o "$TMP/MANIFEST"
+FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$TMP/MANIFEST")
 for FILE in $FILES; do
-  curl -sSL "$REPO_URL/$FILE" -o "$DEST/$FILE"
+  mkdir -p "$TMP/files/$(dirname "$FILE")"
+  curl -fsSL "$REPO_URL/$FILE" -o "$TMP/files/$FILE"
 done
+mkdir -p "$DEST"
+cp -R "$TMP/files/." "$DEST/"
 
-git add "$DEST"
-git commit -m "Update cloud-bootstrap skill to $LATEST_VERSION"
+# Commit only the skill directory, leaving any other staged changes alone.
+git add -- "$DEST"
+if git diff --cached --quiet -- "$DEST"; then
+  echo "No changes to commit in $DEST."
+else
+  git commit -m "Update cloud-bootstrap skill to $LATEST_VERSION" -- "$DEST"
+fi
 
 echo ""
 echo "Updated cloud-bootstrap from $INSTALLED_VERSION to $LATEST_VERSION."

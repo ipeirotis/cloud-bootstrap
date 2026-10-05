@@ -3,6 +3,28 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-05
+
+Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
+
+### Security
+- SessionStart hooks (GCP, Azure, multi-provider) run only in Claude Code on the Web (`CLAUDE_CODE_REMOTE=true`). Locally, the fixed decrypted-key path and the shared gcloud/az config let concurrent sessions overwrite each other's identity.
+- GCP hooks clear `CLOUDSDK_AUTH_ACCESS_TOKEN` (and persist the unset) before any early exit; it outranks the activated service account.
+- AWS hooks clear stale `AWS_SESSION_TOKEN`/`AWS_PROFILE` before using long-lived IAM-user keys.
+- Credential rotation: after a suspected compromise, revoke the old key at once (step 9), not step 6; verify the replacement in an isolated config with a caller-identity check before revoking; re-encrypt to a temp file, verify, then rename, so a failed write never destroys the current credential.
+- GCP role grants keep the fetched policy's `etag`, `version`, and `auditConfigs` (no lost conditional bindings or concurrent edits).
+- Azure service-principal names are repo-specific and collision-checked against both applications and service principals.
+- SKILL.md rules: IAM changes happen only inside approved setup steps, with user-approved roles and a user-supplied bootstrap token; pasted bootstrap tokens are the designed handoff and are never stored or echoed.
+
+### Fixed
+- `install.sh` / `update.sh`: download every file with `curl --fail` into a temp dir and install only if all succeed; commit only the skill directory; skip the commit when nothing changed. `update.sh` reads its confirmation from the terminal (stdin is the script under `curl | bash`) and, with no terminal, requires `--yes`.
+- New `MANIFEST` lists the distributed files; both scripts read it from the release they install, so new files are picked up.
+- AWS bootstrap: `get-session-token` passes MFA (`--serial-number`, `--token-code`), without which its credentials cannot call IAM; the credential handoff uses `aws configure export-credentials`; IAM user names map every disallowed character to `-` and cap at 64 characters with a hash suffix (ordinary emails keep their old names); Add Team Member creates a new IAM user in the group, since access keys belong to users.
+- Azure: the bootstrap snippet prints the ARM and Graph tokens; `--skip-assignment` (obsolete) is gone; role grants use the subscription ID from setup step 2 before `.cloud-config.json` exists; the REST path collects the tenant ID before creating anything, uses `curl --fail` with field checks, and deletes a half-created application on failure; role assignments get a GUID without needing `uuidgen`.
+- GCP: key creation fails on HTTP errors and validates the key before encrypting; the smoke test mints a token instead of `gcloud projects describe` (which needs the Cloud Resource Manager API); first-time prerequisites include Service Account Key Admin, which holds `iam.serviceAccountKeys.create`.
+- All standalone and multi-provider hooks run the per-file 180-day age check.
+- First-time setup writes the Cloud Credentials section to `CLAUDE.md` or `AGENTS.md`, whichever the repo uses; uninstall removes it from either.
+
 ## [1.4.0] - 2026-04-10
 
 ### Added

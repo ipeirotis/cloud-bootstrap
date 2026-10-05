@@ -10,6 +10,7 @@ This is a Claude Code skill repository — it contains no executable source code
 ├── SKILL.md               # Skill router (frontmatter + phase detection)
 ├── VERSION                # Current version (semver)
 ├── CHANGELOG.md           # Version history and release notes
+├── MANIFEST               # Files install.sh/update.sh place in a repo
 ├── install.sh             # One-line installer script
 ├── update.sh              # Update checker and upgrader
 ├── workflows/

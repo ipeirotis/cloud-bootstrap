@@ -10,8 +10,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 > create/encrypt/commit step then fails (bootstrap token expired, passphrase
 > missing, provider error), the committed encrypted credential would point at a
 > revoked key and lock the user out until they repeat privileged onboarding.
-> **Exception:** for a suspected/known compromise, revoke the old key immediately
-> (skip to step 6 first), accepting the brief lockout, since containment wins.
+> **Exception:** for a suspected/known compromise, containment wins: capture
+> `OLD_KEY_ID` (step 3), then **revoke it at once** (the provider-side delete in
+> step 9), before creating the replacement, accepting the brief lockout. Then
+> continue with steps 4–8.
 
 3. **Record the OLD key identifier first**, before creating or overwriting anything. The old key id often lives only in the current credential material, so capture it now or it becomes unrecoverable once the `.enc` is replaced:
    - **GCP:** decrypt the existing `ENC_FILE` and read `OLD_KEY_ID=$(... | jq -r .private_key_id)` (or list keys via "Key Management" and note the current one).
@@ -21,12 +23,41 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
    - **AWS caveat:** the add-team-member snippet calls `aws iam create-user` first, but during rotation the user already exists, so that call errors. For an AWS rotation, **skip `create-user`/`add-user-to-group`** and only create a new access key for the existing user:
      ```bash
-     SANITIZED_EMAIL=$(echo "$(git config user.email)" | sed 's/[@.]/-/g')
+     SANITIZED_EMAIL=$(printf '%s' "$(git config user.email)" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
+     # Same normalization as references/aws.md (64-char IAM limit, hash suffix)
+     if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
+       SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$(git config user.email)" | sha256sum | cut -c1-8)"
+     fi
      aws iam create-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
      # then reformat (access_key_id/secret_access_key/region) as in aws.md
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
-5. Verify the new key works (run the provider's "Verify (Smoke Test)") before touching the old one.
+5. Verify the **new** key works before touching the old one. The provider smoke test alone is not enough: the CLI is still logged in as the old key (or the bootstrap admin), so it would pass without using the replacement. Activate `credentials.json` in an isolated config and confirm the caller identity:
+   - **GCP:**
+     ```bash
+     TMPCFG=$(mktemp -d)
+     env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json
+     env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth print-access-token >/dev/null \
+       && env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud config get-value account
+     rm -rf "$TMPCFG"
+     ```
+   - **AWS** (new keys can take a few seconds to propagate):
+     ```bash
+     env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
+       AWS_ACCESS_KEY_ID="$(jq -r .access_key_id credentials.json)" \
+       AWS_SECRET_ACCESS_KEY="$(jq -r .secret_access_key credentials.json)" \
+       aws sts get-caller-identity --query Arn --output text   # must be claude-agent-${SANITIZED_EMAIL}
+     ```
+   - **Azure:**
+     ```bash
+     TMPCFG=$(mktemp -d)
+     AZURE_CONFIG_DIR="$TMPCFG" az login --service-principal \
+       -u "$(jq -r .appId credentials.json)" -p "$(jq -r .password credentials.json)" \
+       --tenant "$(jq -r .tenant credentials.json)" >/dev/null \
+       && AZURE_CONFIG_DIR="$TMPCFG" az account show --query user.name -o tsv
+     rm -rf "$TMPCFG"
+     ```
+   Continue only if the reported identity is the expected service account, user, or app.
 6. Re-encrypt with the user's passphrase. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)
@@ -41,10 +72,21 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      PROVIDER=$(jq -r .provider .cloud-config.json 2>/dev/null)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
-   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-     -pass stdin \
-     -in credentials.json -out "$ENC_FILE"
-   rm -f credentials.json
+   # Encrypt to a private temp file in the same directory, prove it decrypts
+   # to the new key, and only then replace ENC_FILE in one rename. A failed or
+   # interrupted write never truncates the current credential, and the
+   # plaintext is kept until the replacement is safely in place.
+   TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX")
+   if echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
+        -in credentials.json -out "$TMP_ENC" \
+      && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
+        | cmp -s - credentials.json; then
+     mv -f "$TMP_ENC" "$ENC_FILE" && rm -f credentials.json
+   else
+     rm -f "$TMP_ENC"
+     echo "ERROR: re-encryption failed; $ENC_FILE and credentials.json are unchanged. Fix the cause and retry."
+     exit 1
+   fi
    ```
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 7. **Do not reset the shared top-level `created_at`** in `.cloud-config.json` — that field is repo-wide, so bumping it makes every other team member's still-old `.cloud-credentials.*.enc` look freshly rotated and suppresses their 180-day age warning. Credential age is tracked **per file** via each `.enc` file's git commit time (the Authenticate age check uses that), so committing the rotated file in the next step updates only this user's age. (If you maintain optional per-file age metadata, update only this credential's entry — never the shared timestamp.)

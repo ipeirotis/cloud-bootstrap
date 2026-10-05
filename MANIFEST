@@ -1,0 +1,16 @@
+# Files that install.sh and update.sh place in .claude/skills/cloud-bootstrap/.
+# One path per line, relative to the repository root. Both scripts read this
+# file from the release they install, so a release that adds a file only has
+# to list it here.
+SKILL.md
+VERSION
+references/gcp.md
+references/aws.md
+references/azure.md
+workflows/first-time-setup.md
+workflows/add-team-member.md
+workflows/authenticate.md
+workflows/credential-rotation.md
+workflows/permission-escalation.md
+workflows/multi-provider.md
+workflows/uninstall.md

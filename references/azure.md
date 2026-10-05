@@ -37,6 +37,12 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
+# Claude Code on the Web only: each session is its own container. Locally,
+# `az login` writes the identity into the OS user's shared Azure CLI cache, so
+# concurrent sessions would overwrite each other's principal and subscription;
+# local users keep their own `az login`.
+if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -50,6 +56,15 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 
 KEY="${AZURE_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
+
+# --- Per-file credential age, as in the Authenticate workflow ---
+COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+if [ -z "$COMMIT_TS" ]; then
+  COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
+fi
+if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
+  echo "NOTE: Azure credentials in $ENC_FILE are over 180 days old — consider rotating (see Credential Rotation)."
+fi
 
 # --- Install az CLI if missing ---
 if ! command -v az &> /dev/null; then
@@ -124,12 +139,14 @@ Tell the user to run locally:
 az login
 az account set --subscription SUBSCRIPTION_ID
 
+# Print both tokens so they can be pasted back into the session:
 # ARM token — for resource management and role assignments
-ARM_TOKEN=$(az account get-access-token --query accessToken -o tsv)
-
+echo "ARM_TOKEN=$(az account get-access-token --query accessToken -o tsv)"
 # Graph token — for app registrations, service principals, client secrets
-GRAPH_TOKEN=$(az account get-access-token --resource-type ms-graph --query accessToken -o tsv)
+echo "GRAPH_TOKEN=$(az account get-access-token --resource-type ms-graph --query accessToken -o tsv)"
 ```
+
+The user pastes both lines; set `ARM_TOKEN` and `GRAPH_TOKEN` from them in the session.
 
 Both tokens are valid for ~1 hour. **Important:** ARM tokens are NOT valid for Microsoft Graph API calls, and vice versa. Use the correct token for each endpoint.
 
@@ -142,11 +159,21 @@ Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with the ap
 ## Create Service Principal
 
 ```bash
-# Using Azure CLI with the bootstrap token context
-az ad sp create-for-rbac \
-  --name claude-agent \
-  --skip-assignment \
-  > credentials.json
+# A fixed display name such as "claude-agent" can make create-for-rbac modify an
+# existing app with that name. Derive a repo-specific name, refuse to proceed if
+# it is already taken, and ask the user to approve a different name instead.
+REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)")
+SP_NAME="claude-agent-${REPO_SLUG}"
+# create-for-rbac can modify an existing application OR service principal with
+# this display name, so both collections must be empty.
+if [ -n "$(az ad sp list --display-name "$SP_NAME" --query '[].appId' -o tsv)" ] \
+   || [ -n "$(az ad app list --display-name "$SP_NAME" --query '[].appId' -o tsv)" ]; then
+  echo "ERROR: an application or service principal named $SP_NAME already exists; choose another name with the user."
+  exit 1
+fi
+
+# Creating without a role assignment is the default (--skip-assignment is obsolete)
+az ad sp create-for-rbac --name "$SP_NAME" > credentials.json
 ```
 
 This returns `appId`, `password` (client secret), and `tenant`. The credentials file is already in the right format.
@@ -154,53 +181,69 @@ This returns `appId`, `password` (client secret), and `tenant`. The credentials 
 If `az` is not available, use the Microsoft Graph API (requires `$GRAPH_TOKEN`):
 
 ```bash
-# Step 1: Create application
-curl -X POST "https://graph.microsoft.com/v1.0/applications" \
+# Step 0: Collect the tenant ID BEFORE creating anything. This REST path is used
+# when `az` is unavailable, so ask the user for it (Entra ID > Overview >
+# Tenant ID) and export TENANT_ID. Never persist a placeholder.
+[ -n "$TENANT_ID" ] || { echo "ERROR: ask the user for their Azure tenant ID and set TENANT_ID first."; exit 1; }
+
+# Every Graph call fails on HTTP errors (--fail) and its required fields are
+# checked, so an error body is never read as a result. If any later step fails,
+# the trap deletes the half-created application (which removes its service
+# principal and secrets with it) and the local response files.
+set -e
+APP_OBJECT_ID=""
+cleanup_failed_setup() {
+  if [ -n "$APP_OBJECT_ID" ]; then
+    curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+      -H "Authorization: Bearer $GRAPH_TOKEN" >/dev/null \
+      || echo "WARNING: could not delete application $APP_OBJECT_ID; remove it in the portal."
+  fi
+  rm -f app.json sp.json secret.json credentials.json
+}
+trap 'cleanup_failed_setup' ERR
+
+# Step 1: Create application (same repo-specific, collision-checked name as the
+# CLI path above)
+SP_NAME="claude-agent-$(basename "$(git rev-parse --show-toplevel)")"
+EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+  --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value | length')
+[ "$EXISTING" = "0" ] || { echo "ERROR: an application named $SP_NAME already exists (or the lookup failed); choose another name with the user."; exit 1; }
+(umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"displayName": "claude-agent"}' \
-  > app.json
-
-APP_ID=$(jq -r .appId app.json)
-OBJECT_ID=$(jq -r .id app.json)
+  -d "{\"displayName\": \"$SP_NAME\"}" > app.json)
+APP_ID=$(jq -r '.appId // empty' app.json)
+APP_OBJECT_ID=$(jq -r '.id // empty' app.json)
+[ -n "$APP_ID" ] && [ -n "$APP_OBJECT_ID" ] || { echo "ERROR: application response lacks appId/id."; false; }
 
 # Step 2: Create service principal
-curl -X POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
+(umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"appId\": \"$APP_ID\"}"
+  -d "{\"appId\": \"$APP_ID\"}" > sp.json)
+[ -n "$(jq -r '.id // empty' sp.json)" ] || { echo "ERROR: service principal response lacks id."; false; }
 
 # Step 3: Add client secret
-curl -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
+(umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"passwordCredential": {"displayName": "claude-code"}}' \
-  > secret.json
+  -d '{"passwordCredential": {"displayName": "claude-code"}}' > secret.json)
+SECRET=$(jq -r '.secretText // empty' secret.json)
+[ -n "$SECRET" ] || { echo "ERROR: addPassword response lacks secretText."; false; }
 
 # Step 4: Assemble credentials
-# The tenant ID is required for every future `az login --tenant ...`. This REST
-# path is used precisely when `az` is unavailable, so do NOT persist a
-# placeholder: collect the real tenant ID from the user before writing
-# credentials.json, otherwise the encrypted credential will fail every session.
-# Honor a tenant the user already supplied; only probe `az` as a fallback (it
-# will be empty in the no-`az` REST path, so don't let it clobber a real value).
-TENANT_ID="${TENANT_ID:-$(az account show --query tenantId -o tsv 2>/dev/null || true)}"
-if [ -z "$TENANT_ID" ]; then
-  echo "ERROR: Tenant ID not available. Ask the user for their Azure tenant ID"
-  echo "       and set TENANT_ID before assembling credentials.json."
-  exit 1
-fi
-jq -n \
+(umask 077 && jq -n \
   --arg appId "$APP_ID" \
-  --arg password "$(jq -r .secretText secret.json)" \
+  --arg password "$SECRET" \
   --arg tenant "$TENANT_ID" \
-  '{appId: $appId, password: $password, tenant: $tenant}' \
-  > credentials.json
+  '{appId: $appId, password: $password, tenant: $tenant}' > credentials.json)
 
-rm -f app.json secret.json
+trap - ERR
+rm -f app.json sp.json secret.json
 ```
 
-If the tenant ID is not available, stop and ask the user for it before writing `credentials.json` — never persist a placeholder.
+The tenant ID is collected first, before any Graph call creates anything, so a missing tenant never leaves a half-created application or a live secret on disk.
 
 ## Grant Roles
 
@@ -212,7 +255,10 @@ Roles are assigned to the **service principal**, so they apply to all team membe
 APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
 [ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
 
-SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
+# During first-time setup .cloud-config.json does not exist yet: use the
+# subscription ID gathered in Step 2, and read config only in later sessions.
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
 az role assignment create \
@@ -230,21 +276,33 @@ Or via REST API (requires `$ARM_TOKEN` and `$GRAPH_TOKEN`):
 # appId, or the assignment is created against an empty/incorrect principal.
 APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
 [ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
-SUBSCRIPTION_ID=$(jq -r .project_id .cloud-config.json)
-SP_OBJECT_ID=$(curl -s "https://graph.microsoft.com/v1.0/servicePrincipals?\$filter=appId eq '$APP_ID'" \
-  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id')
+# During first-time setup .cloud-config.json does not exist yet: use the
+# subscription ID gathered in Step 2, and read config only in later sessions.
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
+SP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
+  --data-urlencode "\$filter=appId eq '$APP_ID'" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+[ -n "$SP_OBJECT_ID" ] || { echo "ERROR: service principal for $APP_ID not found."; exit 1; }
 
 # URL-encode the query: role names contain spaces (e.g. "Storage Blob Data
 # Contributor"), which curl rejects if substituted raw into the URL. Let curl
 # encode the params via -G/--data-urlencode.
-ROLE_DEFINITION_ID=$(curl -s -G \
+ROLE_DEFINITION_ID=$(curl -sS --fail -G \
   "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleDefinitions" \
   --data-urlencode "api-version=2022-04-01" \
   --data-urlencode "\$filter=roleName eq 'ROLE_NAME'" \
-  -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id')
+  -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id // empty')
+[ -n "$ROLE_DEFINITION_ID" ] || { echo "ERROR: role 'ROLE_NAME' not found in subscription $SUBSCRIPTION_ID."; exit 1; }
 
-curl -X PUT \
-  "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments/$(uuidgen)?api-version=2022-04-01" \
+# The assignment name must be a new GUID. uuidgen is often missing from minimal
+# images, so fall back to the kernel's generator, then Python.
+ASSIGNMENT_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null \
+  || python3 -c 'import uuid; print(uuid.uuid4())')
+[ -n "$ASSIGNMENT_ID" ] || { echo "ERROR: could not generate a GUID for the role assignment."; exit 1; }
+
+curl -sS --fail -X PUT \
+  "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments/$ASSIGNMENT_ID?api-version=2022-04-01" \
   -H "Authorization: Bearer $ARM_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{

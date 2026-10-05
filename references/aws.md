@@ -65,6 +65,15 @@ if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 KEY="${AWS_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
+# --- Per-file credential age, as in the Authenticate workflow ---
+COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+if [ -z "$COMMIT_TS" ]; then
+  COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
+fi
+if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
+  echo "NOTE: AWS credentials in $ENC_FILE are over 180 days old — consider rotating (see Credential Rotation)."
+fi
+
 # --- Install aws CLI if missing ---
 if ! command -v aws &> /dev/null; then
   for dir in /home/user/bin /usr/local/bin /home/user/aws-cli/v2/current/bin; do
@@ -95,6 +104,10 @@ fi
 export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
 export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
 export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
+# These are long-lived IAM-user keys: a session token left over from an earlier
+# STS login would be sent with them and break every request. Clear it (and any
+# profile selection) here and for the rest of the session below.
+unset AWS_SESSION_TOKEN AWS_PROFILE
 
 # Persist env vars for the session via CLAUDE_ENV_FILE. Persist the aws CLI
 # bin dir too: if it was just installed under /home/user/bin, later session
@@ -104,6 +117,7 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
+  echo "unset AWS_SESSION_TOKEN AWS_PROFILE" >> "$CLAUDE_ENV_FILE"
   AWS_BIN="$(dirname "$(command -v aws)")"
   grep -qxF "export PATH=\"$AWS_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "export PATH=\"$AWS_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
@@ -142,8 +156,12 @@ If `.claude/settings.json` already exists, merge the `SessionStart` hook into th
 Tell the user to run locally:
 
 ```bash
-aws sts get-session-token --duration-seconds 3600
+aws sts get-session-token --duration-seconds 3600 \
+  --serial-number arn:aws:iam::ACCOUNT_ID:mfa/MFA_DEVICE_NAME \
+  --token-code 123456
 ```
+
+Ask the user for their MFA device ARN (`aws iam list-mfa-devices`) and a current code. The MFA flags are required: credentials from `GetSessionToken` [cannot call IAM APIs unless MFA information is included](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetSessionToken.html), and setup immediately calls `iam:CreateGroup`, `iam:CreateUser`, and `iam:CreateAccessKey`.
 
 This returns `AccessKeyId`, `SecretAccessKey`, and `SessionToken`, valid for 1 hour.
 
@@ -156,8 +174,12 @@ aws sts get-caller-identity   # to verify they're logged in
 
 Then ask them to provide the output of:
 ```bash
-echo '{"access_key":"'$AWS_ACCESS_KEY_ID'","secret_key":"'$AWS_SECRET_ACCESS_KEY'","session_token":"'$AWS_SESSION_TOKEN'"}'
+# Emits the credentials the CLI actually resolved (environment, profile, assumed
+# role, or IAM Identity Center), not just the AWS_* environment variables
+aws configure export-credentials --format process
 ```
+
+This returns `AccessKeyId`, `SecretAccessKey`, and `SessionToken` as JSON (AWS CLI v2). The IAM calls below still need credentials that permit IAM: session-token credentials need MFA, as above.
 
 ## API Approach
 
@@ -173,7 +195,12 @@ export AWS_SESSION_TOKEN="..."
 
 # Sanitize email for use as IAM user name (replace @ and . with -)
 USER_EMAIL=$(git config user.email)
-SANITIZED_EMAIL=$(echo "$USER_EMAIL" | sed 's/[@.]/-/g')
+SANITIZED_EMAIL=$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
+# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
+# long names with a hash suffix so distinct emails stay distinct.
+if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
+  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)"
+fi
 
 # Create the shared group
 aws iam create-group --group-name claude-agents
@@ -208,7 +235,12 @@ mv credentials_clean.json credentials.json
 
 ```bash
 USER_EMAIL=$(git config user.email)
-SANITIZED_EMAIL=$(echo "$USER_EMAIL" | sed 's/[@.]/-/g')
+SANITIZED_EMAIL=$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
+# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
+# long names with a hash suffix so distinct emails stay distinct.
+if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
+  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)"
+fi
 
 # Use the configured group (stored in service_account at setup; provider-aware
 # in multi-provider mode), not a hard-coded name, or the new user won't inherit
@@ -315,7 +347,12 @@ aws iam get-group --group-name claude-agents
 Remove a team member (if they leave):
 
 ```bash
-SANITIZED_EMAIL=$(echo "departed-user@example.com" | sed 's/[@.]/-/g')
+SANITIZED_EMAIL=$(printf '%s' "departed-user@example.com" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
+# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
+# long names with a hash suffix so distinct emails stay distinct.
+if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
+  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "departed-user@example.com" | sha256sum | cut -c1-8)"
+fi
 
 # Delete their access keys
 for KEY_ID in $(aws iam list-access-keys --user-name "claude-agent-${SANITIZED_EMAIL}" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do

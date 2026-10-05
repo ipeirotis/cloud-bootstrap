@@ -1,6 +1,6 @@
 ---
 name: cloud-bootstrap
-version: 1.4.0
+version: 1.5.0
 description: >-
   Manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored
   directly in a repo so they persist across Claude Code sessions.
@@ -133,6 +133,7 @@ When executing any workflow, follow these communication standards:
 - **Final summary:** After completing a workflow, provide a short checklist of what was done and what the user should verify.
 - **Do NOT** add unsolicited suggestions about cloud architecture, cost optimization, or alternative services during credential workflows. Stay focused on the credential task.
 - **Do NOT** output raw credentials, keys, or passphrases to the chat. If you need to show a file's contents for debugging, show only the first and last 4 characters.
+- **Bootstrap tokens are the one thing the user pastes in.** Setup, add-member, and rotation need the user's short-lived (~1 hour) bootstrap token(s), which they paste into the session; that is the designed handoff, not an exception to the rule above. Use them only for the current workflow, never write them to the repo or echo them back, and keep any copy in a private temp file deleted when the workflow ends. If the user prefers not to paste a token, give them the exact commands to run themselves instead.
 
 ## Examples
 
@@ -186,7 +187,7 @@ When executing any workflow, follow these communication standards:
 ## Rules
 
 - Never store plaintext credentials in the repo or git history.
-- Never modify IAM policies yourself.
+- Never modify IAM policies on your own initiative. The one exception is the role grants inside First-Time Setup (and an AWS member's user in Add Team Member): there the user has approved the exact roles in Step 3 and supplied a short-lived bootstrap token for that purpose, and only those approved grants are made. Everything else, including any 403 / permission escalation, goes to the user to grant.
 - Prefer granular roles over broad roles (e.g., `roles/cloudfunctions.developer` not `roles/editor`; `S3ReadOnlyAccess` not `AdministratorAccess`).
 - Always delete `/tmp/credentials.json` immediately after activation.
 - If the bootstrap token expires before setup is complete, ask the user for a new one.

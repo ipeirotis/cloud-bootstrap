@@ -99,7 +99,7 @@ This ensures that future sessions start with the CLI installed and credentials a
 
 ## Step 7: Update CLAUDE.md
 
-Append a `## Cloud Credentials` section to CLAUDE.md (create the file if it doesn't exist) documenting:
+Append a `## Cloud Credentials` section to the repo's agent-instructions file: `CLAUDE.md`, or `AGENTS.md` when that is the file the repo uses (for example, when `CLAUDE.md` only points to `AGENTS.md`). Create `CLAUDE.md` only if neither exists. Document:
 
 - The provider and project/account identifier
 - The service account identity

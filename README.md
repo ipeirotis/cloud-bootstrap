@@ -156,7 +156,7 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/updat
 This will:
 1. Show your installed version and the latest version
 2. Display the changelog entries you'd be getting
-3. Ask for confirmation before updating
+3. Ask for confirmation on your terminal before updating (where no terminal is available, run `... | bash -s -- --yes`)
 
 You can also check your installed version at any time: `cat .claude/skills/cloud-bootstrap/VERSION`.
 

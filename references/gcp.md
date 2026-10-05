@@ -2,7 +2,7 @@
 
 ## User Prerequisites (First-Time Setup)
 
-The user's GCP account needs **Owner** or **Service Account Admin + Project IAM Admin** roles on the project.
+The user's GCP account needs **Owner**, or **Service Account Admin + Service Account Key Admin + Project IAM Admin**, on the project. Service Account Admin alone cannot create keys: `iam.serviceAccountKeys.create` is in Service Account Key Admin.
 
 ## Team Member Prerequisites (Adding to Existing Setup)
 
@@ -52,6 +52,11 @@ After setup completes, create a SessionStart hook that installs the CLI **and** 
 #!/bin/bash
 set -e
 
+# Claude Code on the Web only: each session is its own container. On a shared
+# local machine the fixed key path and gcloud's active account would leak
+# between concurrent sessions, so local users keep their own gcloud login.
+if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -59,12 +64,30 @@ if [ ! -f "$CONFIG" ]; then exit 0; fi
 PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "gcp" ]; then exit 0; fi
 
+# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
+# the activated service account in gcloud's credential order. Clear it for this
+# script and the whole session before any early exit.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+fi
+
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
 if [ -z "$USER_EMAIL" ] || [ ! -f "$ENC_FILE" ]; then exit 0; fi
 
 KEY="${GCP_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
+
+# --- Per-file credential age, as in the Authenticate workflow ---
+COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+if [ -z "$COMMIT_TS" ]; then
+  COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
+fi
+if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
+  echo "NOTE: GCP credentials in $ENC_FILE are over 180 days old — consider rotating (see Credential Rotation)."
+fi
 
 # --- Install gcloud if missing ---
 if ! command -v gcloud &> /dev/null; then
@@ -167,32 +190,38 @@ The service account email will be: `claude-agent@$PROJECT_ID.iam.gserviceaccount
 
 ## Grant Roles
 
-For each role:
+For each role, read the **full** current policy (version 3), add the binding, and write the same object back. Keeping the fetched `etag`, `version`, and `auditConfigs` matters: `setIamPolicy` replaces the whole policy, a missing `etag` can overwrite a concurrent change, and writing a version-1 policy over a version-3 one drops its conditional bindings.
 
 ```bash
-# Get current IAM policy
-curl -X POST \
+ROLE="roles/ROLE_NAME"
+MEMBER="serviceAccount:claude-agent@$PROJECT_ID.iam.gserviceaccount.com"
+
+# Get the current IAM policy, including etag, version, and auditConfigs
+curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:getIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"options": {"requestedPolicyVersion": 3}}' > /tmp/policy.json
 
-# Set updated policy with new binding added
-curl -X POST \
+# Add the member to the unconditional binding for ROLE (or create it),
+# keeping every other field of the fetched policy untouched
+jq --arg r "$ROLE" --arg m "$MEMBER" '
+  .version = 3
+  | .bindings = (.bindings // [])
+  | if any(.bindings[]; .role == $r and .condition == null)
+    then .bindings |= map(if .role == $r and .condition == null
+                          then .members = ((.members + [$m]) | unique) else . end)
+    else .bindings += [{role: $r, members: [$m]}] end
+  | {policy: .}' /tmp/policy.json > /tmp/new-policy.json
+
+# Write it back; a 409 (etag mismatch) means someone else changed the policy:
+# re-run both steps rather than forcing the write
+curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:setIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "policy": {
-      "bindings": [
-        ... existing bindings ...,
-        {
-          "role": "roles/ROLE_NAME",
-          "members": ["serviceAccount:claude-agent@'$PROJECT_ID'.iam.gserviceaccount.com"]
-        }
-      ]
-    }
-  }'
+  -d @/tmp/new-policy.json
+rm -f /tmp/policy.json /tmp/new-policy.json
 ```
 
 **Important:** Merge new bindings with existing ones. Do not overwrite the entire policy.
@@ -210,12 +239,21 @@ PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.p
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 
-curl -X POST \
+# Fail on HTTP errors and validate the response before writing a key file, so
+# an error body is never decoded into credentials.json and encrypted.
+RESP=$(mktemp)
+if ! curl -sS --fail -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' \
-  | jq -r '.privateKeyData' | base64 -d > credentials.json
+  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; then
+  echo "ERROR: key creation failed."; rm -f "$RESP"; exit 1
+fi
+KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP"); rm -f "$RESP"
+if [ -z "$KEY_DATA" ]; then echo "ERROR: response has no privateKeyData."; exit 1; fi
+(umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json)
+jq -e '.type == "service_account" and .private_key' credentials.json >/dev/null \
+  || { echo "ERROR: decoded key is not a service-account key."; rm -f credentials.json; exit 1; }
 ```
 
 ## Key Management
@@ -270,11 +308,14 @@ lives only in the ephemeral sandbox and is never written to the repo.
 After activating credentials, run this lightweight check to confirm they work:
 
 ```bash
-# Provider-aware: in multi-provider repos project_id is in the providers[] entry.
-gcloud projects describe "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end)' .cloud-config.json)" --format="value(projectId)"
+# Minting a token exchanges the service-account key with Google, so it fails if
+# the key was deleted or disabled, and it needs no project-level API or role.
+gcloud auth print-access-token >/dev/null && gcloud config get-value account
 ```
 
-If this fails with a permission error, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the service account.
+Then exercise one capability the granted roles actually allow (for example `gcloud storage ls gs://<bucket>/` for a storage role, or `bq query --use_legacy_sql=false 'SELECT 1'` for BigQuery). Avoid `gcloud projects describe` as the check: it needs the Cloud Resource Manager API enabled on the project and fails for valid keys where it is off.
+
+If the token step fails, the credentials may be expired or revoked. Re-run the **Authenticate** flow or ask the user to check the service account.
 
 ## Common Roles Reference
 
