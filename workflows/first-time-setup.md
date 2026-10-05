@@ -55,10 +55,15 @@ Using the bootstrap token and provider-specific commands from the reference file
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
-   printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-     -pass stdin \
-     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
+   if ! printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
+        -pass stdin \
+        -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"; then
+     rm -f ".cloud-credentials.${USER_EMAIL}.enc" credentials.json
+     echo "ERROR: encryption failed. Run the provider's setup rollback now (step 2), then retry setup."
+     exit 1
+   fi
    ```
+   If encryption fails, the snippet deletes the plaintext and stops; then undo the new identity as step 2 describes (GCP: delete the service account, which removes its keys; AWS: `rollback_aws_setup`; Azure: "Rollback a Failed Setup"), so no live, unusable credential is left behind.
 6. Save shared config (include `created_at` for credential age tracking):
    ```bash
    cat > .cloud-config.json << EOF

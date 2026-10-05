@@ -46,7 +46,7 @@ record_unrevoked() {   # $1 = identifier, $2 = note
   fi
 }
 
-STATUS=1
+STATUS=1; REVOKED_ID=""
 case "$PROVIDER" in
   gcp)
     PROJECT_ID="${PROJECT_ID:-$(cfg project_id)}"
@@ -63,7 +63,7 @@ case "$PROVIDER" in
     if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ] \
        && curl -sS --fail -X DELETE "https://iam.googleapis.com/v1/$NAME" \
             -H "Authorization: Bearer $TOKEN" >/dev/null; then
-      echo "Deleted GCP key ${NAME##*/}."; STATUS=0
+      echo "Deleted GCP key ${NAME##*/}."; STATUS=0; REVOKED_ID="${NAME##*/}"
     else
       record_unrevoked "${NAME:-unknown key of ${SA_EMAIL:-the service account}}" "new key for $USER_EMAIL"
     fi ;;
@@ -113,11 +113,21 @@ case "$PROVIDER" in
         -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
         -d "{\"keyId\": \"$KID\"}")
     fi
-    if [ "$HTTP" = 204 ]; then echo "Removed Azure secret $KID."; STATUS=0
+    if [ "$HTTP" = 204 ]; then echo "Removed Azure secret $KID."; STATUS=0; REVOKED_ID="$KID"
     else record_unrevoked "${KID:-secret labelled claude-code-$USER_EMAIL}" "app $APP_ID, HTTP $HTTP"; fi ;;
   *)
     echo "usage: discard-credential.sh gcp|aws|azure [key|member]"; exit 2 ;;
 esac
+
+# A revoked key or secret may already be recorded as this member's current one
+# (key_ids); drop that entry so the config never names a deleted credential
+if [ "$STATUS" = 0 ] && [ -f "$CONFIG" ] && [ -n "${REVOKED_ID:-}" ]; then
+  jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg id "$REVOKED_ID" '
+    def clr: if .key_ids[$e] == $id then del(.key_ids[$e]) else . end;
+    if .providers then .providers |= map(if .provider == $p then clr else . end)
+    else (if .provider == $p then clr else . end) end' "$CONFIG" > "$CONFIG.tmp" \
+    && mv "$CONFIG.tmp" "$CONFIG"
+fi
 
 rm -f "$CREDS" credentials_clean.json
 exit "$STATUS"

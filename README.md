@@ -125,16 +125,12 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/insta
 BASE=https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main
 DEST=.claude/skills/cloud-bootstrap
 
-mkdir -p "$DEST/references" "$DEST/workflows"
-
-for FILE in \
-  SKILL.md VERSION \
-  references/gcp.md references/aws.md references/azure.md \
-  workflows/first-time-setup.md workflows/add-team-member.md \
-  workflows/authenticate.md workflows/credential-rotation.md \
-  workflows/permission-escalation.md workflows/multi-provider.md \
-  workflows/uninstall.md; do
-  curl -sSL "$BASE/$FILE" -o "$DEST/$FILE"
+# MANIFEST lists every distributed file (including scripts/discard-credential.sh,
+# which the workflows call when a new credential has to be revoked)
+FILES=$(curl -fsSL "$BASE/MANIFEST" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$')
+for FILE in $FILES; do
+  mkdir -p "$DEST/$(dirname "$FILE")"
+  curl -fsSL "$BASE/$FILE" -o "$DEST/$FILE" || { echo "ERROR: could not download $FILE"; exit 1; }
 done
 
 git add "$DEST"

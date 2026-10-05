@@ -154,7 +154,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 7. **Do not reset the shared top-level `created_at`** in `.cloud-config.json` — that field is repo-wide, so bumping it makes every other team member's still-old `.cloud-credentials.*.enc` look freshly rotated and suppresses their 180-day age warning. Credential age is tracked **per file** via each `.enc` file's git commit time (the Authenticate age check uses that), so committing the rotated file in the next step updates only this user's age. (If you maintain optional per-file age metadata, update only this credential's entry — never the shared timestamp.)
-8. Record the swap in `.cloud-config.json`: move the old ID from `rotating` (step 3) to the member's `revoke_pending` list, which step 9 works through, and for GCP point `key_ids` at the new key. The list keeps every earlier ID still awaiting deletion, so a second rotation never overwrites one. (In the compromise path step 9 has already revoked the old key and recorded that as `revoked_early`, so nothing is queued.)
+8. Record the swap in `.cloud-config.json`: move the old ID from `rotating` (step 3) to the member's `revoke_pending` list, which step 9 works through, and for GCP and Azure point `key_ids` at the new key or secret. The list keeps every earlier ID still awaiting deletion, so a second rotation never overwrites one. (In the compromise path step 9 has already revoked the old key and recorded that as `revoked_early`, so nothing is queued.)
    ```bash
    USER_EMAIL=$(git config user.email)
    # PROVIDER: the provider being rotated (required in multi-provider configs)
@@ -176,7 +176,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      echo "ERROR: could not read the new key ID from $ENC_FILE; nothing recorded."; exit 1
    fi
    OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.rotating[$e]')}"
-   [ "$PROVIDER" = gcp ] && OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.key_ids[$e]')}"
+   [ "$PROVIDER" != aws ] && OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.key_ids[$e]')}"
    [ -n "$(pcfg '.revoked_early[$e]')" ] && OLD_KEY_REVOKED=1
    [ "${OLD_KEY_REVOKED:-}" = 1 ] && OLD_KEY_ID=""     # revoked early (compromise path)
    [ -n "$NEW_KEY_ID" ] && [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
@@ -187,14 +187,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      exit 1
    fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg new "${NEW_KEY_ID:-}" --arg old "${OLD_KEY_ID:-}" '
-     def upd: (if $p == "gcp" then .key_ids[$e] = $new else . end)
+     def upd: (if $p != "aws" and $new != "" then .key_ids[$e] = $new else . end)
        | del(.rotating[$e]) | del(.revoked_early[$e])
        | if $old != "" then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [$old] | unique) else . end;
      if .providers then .providers |= map(if .provider == $p then upd else . end) else upd end' \
      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
    ```
    Commit the updated encrypted credentials file together with `.cloud-config.json`.
-9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list, plus `OLD_KEY_ID` if this shell has it, and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
+9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list, plus `OLD_KEY_ID` if this shell has it, and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
    ```bash
    USER_EMAIL=$(git config user.email)
    # PROVIDER: the provider being rotated (required in multi-provider configs)
@@ -204,7 +204,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    IDS="$(pcfg '((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]') ${OLD_KEY_ID:-}"
    if [ "${COMPROMISE:-}" = 1 ]; then
      IDS="$IDS $(pcfg '.rotating[$e]')"
-     [ "$PROVIDER" = gcp ] && IDS="$IDS $(pcfg '.key_ids[$e]')"
+     [ "$PROVIDER" != aws ] && IDS="$IDS $(pcfg '.key_ids[$e]')"
    fi
    IDS=$(printf '%s\n' $IDS | sort -u)
    [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no OLD_KEY_ID, no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }

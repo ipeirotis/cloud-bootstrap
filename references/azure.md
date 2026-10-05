@@ -439,6 +439,13 @@ echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
   --arg tenant "$TENANT_ID" \
   --arg keyId "$NEW_SECRET_KEY_ID" \
   '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
+
+# Record which secret is this member's (not secret), so offboarding can find
+# it without the member's passphrase; commit .cloud-config.json with the .enc
+jq --arg e "$USER_EMAIL" --arg k "$NEW_SECRET_KEY_ID" '
+  if .providers then .providers |= map(if .provider == "azure" then .key_ids[$e] = $k else . end)
+  else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \
+  && mv .cloud-config.json.tmp .cloud-config.json
 ```
 
 **Note:** The `.cloud-config.json` for Azure should also store `tenant` alongside the other fields.
@@ -458,23 +465,39 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Remove every secret the member still has: the current one and any `keyId` in their `revoke_pending` list in `.cloud-config.json` (old secrets a rotation could not remove yet). Delete their credential file (`.cloud-credentials.azure.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`) only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
+Remove a team member's secrets (if they leave), with `OBJECT_ID` resolved as above. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. Members added before `key_ids` existed have no entry: list the secrets above, find theirs by the `claude-code-<email>` label, and set `KEY_ID` to it.
 
 ```bash
-KEY_ID="KEY_ID_TO_REMOVE"
-[ -n "$OBJECT_ID" ] && [ -n "$KEY_ID" ] || { echo "ERROR: resolve OBJECT_ID and set KEY_ID first."; exit 1; }
-STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-  "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
-  -H "Authorization: Bearer $GRAPH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"keyId\": \"$KEY_ID\"}")
-if [ "$STATUS" = "204" ]; then
-  echo "Secret $KEY_ID removed; now delete the member's credential file (.cloud-credentials.azure.<email>.enc in multi-provider repos, else .cloud-credentials.<email>.enc)."
-else
-  echo "ERROR: removePassword returned HTTP $STATUS; the secret may still be active. Keep the .enc file and retry."
-  exit 1
-fi
+MEMBER_EMAIL="departed-user@example.com"
+[ -n "$OBJECT_ID" ] || { echo "ERROR: resolve OBJECT_ID first."; exit 1; }
+IDS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end)
+  | ([.key_ids[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end)) | unique | .[]' .cloud-config.json)
+IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
+[ -n "$IDS" ] || { echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1; }
+FAILED=""
+for ID in $IDS; do
+  STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+    "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
+    -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"keyId\": \"$ID\"}")
+  if [ "$STATUS" = "204" ]; then
+    jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
+      def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
+        | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
+        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end);
+      if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      || { echo "ERROR: secret $ID removed but .cloud-config.json not updated."; FAILED="$FAILED $ID"; }
+  else
+    echo "ERROR: removePassword for $ID returned HTTP $STATUS; it may still be active."
+    FAILED="$FAILED $ID"
+  fi
+done
+[ -z "$FAILED" ] || { echo "Still to do:$FAILED. The credential file stays; retry."; exit 1; }
+git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 ```
+
+Commit the removed credential file and `.cloud-config.json` together.
 
 ## Activate (Subsequent Sessions)
 
