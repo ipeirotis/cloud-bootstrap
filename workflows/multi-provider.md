@@ -148,7 +148,15 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "WARNING: gcloud auth failed — skipping GCP."
         rm -f /tmp/credentials.json; continue
       fi
-      gcloud config set project "$(jq -r ".providers[$i].project_id" "$CONFIG" 2>/dev/null)" 2>/dev/null || true
+      # Confirm the configured project took; otherwise an earlier cached project
+      # would stay active, so log the account out and skip GCP.
+      GCP_PROJECT=$(jq -r ".providers[$i].project_id // empty" "$CONFIG" 2>/dev/null)
+      if [ -z "$GCP_PROJECT" ] || ! gcloud config set project "$GCP_PROJECT" 2>/dev/null \
+         || [ "$(gcloud config get-value project 2>/dev/null)" != "$GCP_PROJECT" ]; then
+        echo "WARNING: could not select GCP project '$GCP_PROJECT' — skipping GCP."
+        gcloud auth revoke "$(jq -r .client_email /tmp/credentials.json)" 2>/dev/null || true
+        rm -f /tmp/credentials.json; continue
+      fi
       # Preserve a GCP-specific key + ADC for the session so Python Google
       # client libraries (which read GOOGLE_APPLICATION_CREDENTIALS, not the
       # gcloud CLI auth store) work. The shared cleanup below removes

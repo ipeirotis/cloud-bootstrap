@@ -57,7 +57,8 @@ Using the bootstrap token and provider-specific commands:
    ```bash
    rm -f credentials.json
    ```
-5. Commit the new encrypted credentials file.
+5. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves.
+6. Commit the new encrypted credentials file (and, for GCP, `.cloud-config.json`).
 
 ## Step 4: Ensure SessionStart Hook Exists
 

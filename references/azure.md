@@ -188,8 +188,9 @@ if [ -n "$SP_HITS" ] || [ -n "$APP_HITS" ]; then
   exit 1
 fi
 
-# Creating without a role assignment is the default (--skip-assignment is obsolete)
-az ad sp create-for-rbac --name "$SP_NAME" > credentials.json
+# Creating without a role assignment is the default (--skip-assignment is obsolete).
+# The output holds the new client secret: write it private (0600) from the start.
+(umask 077 && az ad sp create-for-rbac --name "$SP_NAME" > credentials.json)
 ```
 
 This returns `appId`, `password` (client secret), and `tenant`. The credentials file is already in the right format.
@@ -300,8 +301,10 @@ Roles are assigned to the **service principal**, so they apply to all team membe
 ```bash
 # APP_ID is the service principal's appId. During first-time setup it comes from
 # the credentials you just created; in later sessions read it from config.
-APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
-[ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
+APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+# Provider-aware fallback: in multi-provider configs the app id is in providers[]
+APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
 
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
@@ -322,8 +325,10 @@ Or via REST API (requires `$ARM_TOKEN` and `$GRAPH_TOKEN`):
 # Resolve the service principal's object id from its appId before assigning a
 # role. The role assignment's principalId must be this SP object id, not the
 # appId, or the assignment is created against an empty/incorrect principal.
-APP_ID="${APP_ID:-$(jq -r '.appId // .service_account' credentials.json 2>/dev/null)}"
-[ -z "$APP_ID" ] || [ "$APP_ID" = "null" ] && APP_ID=$(jq -r .service_account .cloud-config.json)
+APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+# Provider-aware fallback: in multi-provider configs the app id is in providers[]
+APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"

@@ -86,6 +86,7 @@ Determine the current user's email, then:
      PROVIDERS=$(jq -r '.providers[].provider' .cloud-config.json)
    else
      # Single-provider: check for .cloud-credentials.<email>.enc
+     :
    fi
    ```
    If **no** matching credential file exists for the current user → read `workflows/add-team-member.md`

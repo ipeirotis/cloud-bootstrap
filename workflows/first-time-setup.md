@@ -69,11 +69,13 @@ Using the bootstrap token and provider-specific commands from the reference file
      "tenant": "<Azure tenant ID, omit for GCP/AWS>",
      "region": "<AWS region, omit for GCP/Azure>",
      "iam_user_prefix": "<AWS user-name prefix, omit for GCP/Azure>",
+     "key_ids": {"<email>": "<GCP key ID, omit for AWS/Azure>"},
      "roles": ["<role1>", "<role2>"],
      "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    }
    EOF
    ```
+   For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`).
 7. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json

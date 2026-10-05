@@ -122,7 +122,17 @@ if ! gcloud auth activate-service-account --key-file="$ADC_KEY" 2>/dev/null; the
   rm -f "$ADC_KEY"
   exit 0
 fi
-gcloud config set project "$(jq -r .project_id "$CONFIG" 2>/dev/null)" 2>/dev/null || true
+# Select the configured project and confirm it took. A failure here would leave
+# an earlier cached project active, so later commands would hit the wrong one:
+# treat it like an authentication failure and log the account out again.
+PROJECT_ID=$(jq -r '.project_id // empty' "$CONFIG" 2>/dev/null)
+if [ -z "$PROJECT_ID" ] || ! gcloud config set project "$PROJECT_ID" 2>/dev/null \
+   || [ "$(gcloud config get-value project 2>/dev/null)" != "$PROJECT_ID" ]; then
+  echo "WARNING: could not select GCP project '$PROJECT_ID' — logging out."
+  gcloud auth revoke "$(jq -r .client_email "$ADC_KEY")" 2>/dev/null || true
+  rm -f "$ADC_KEY"
+  exit 0
+fi
 
 # --- Populate Application Default Credentials for Python client libraries ---
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
@@ -282,6 +292,20 @@ if [ -z "$KEY_DATA" ]; then echo "ERROR: response has no privateKeyData."; exit 
 (umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json)
 jq -e '.type == "service_account" and .private_key' credentials.json >/dev/null \
   || { echo "ERROR: decoded key is not a service-account key."; rm -f credentials.json; exit 1; }
+KEY_ID=$(jq -r .private_key_id credentials.json)
+```
+
+### Record the key's owner
+
+A service-account key carries no member label, and its ID is otherwise stored only inside that member's encrypted file. Record which member owns which key in `.cloud-config.json` (the ID is not secret), so the key can be found and deleted when the member leaves even if their passphrase is gone. Run this once `.cloud-config.json` exists (during first-time setup, right after writing it) and commit the config with the `.enc` file:
+
+```bash
+# Provider-aware: in multi-provider configs the map lives in the gcp entry
+USER_EMAIL=$(git config user.email)
+jq --arg e "$USER_EMAIL" --arg k "$KEY_ID" '
+  if .providers then .providers |= map(if .provider == "gcp" then .key_ids[$e] = $k else . end)
+  else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \
+  && mv .cloud-config.json.tmp .cloud-config.json
 ```
 
 ## Key Management
@@ -298,15 +322,28 @@ curl -X GET \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delete a specific key (if a team member leaves or a key is compromised):
+Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess.
 
 ```bash
-curl -X DELETE \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/KEY_ID" \
-  -H "Authorization: Bearer $TOKEN"
+MEMBER_EMAIL="departed-user@example.com"
+KEY_ID=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp") | .key_ids[$e]) else .key_ids[$e] end) // empty' .cloud-config.json)
+[ -n "$KEY_ID" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
+# --fail turns a 401/403/404 into an error: keep the member's .enc file and
+# map entry until Google confirms the key is gone.
+if curl -sS --fail -X DELETE \
+  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$KEY_ID" \
+  -H "Authorization: Bearer $TOKEN"; then
+  git rm -q --ignore-unmatch ".cloud-credentials.${MEMBER_EMAIL}.enc" ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc"
+  jq --arg e "$MEMBER_EMAIL" '
+    if .providers then .providers |= map(if .provider == "gcp" then del(.key_ids[$e]) else . end)
+    else del(.key_ids[$e]) end' .cloud-config.json > .cloud-config.json.tmp \
+    && mv .cloud-config.json.tmp .cloud-config.json
+else
+  echo "ERROR: key $KEY_ID was not deleted; the member's files are unchanged."; exit 1
+fi
 ```
 
-Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.
+Commit the removed `.enc` file and the updated `.cloud-config.json` together.
 
 ## Activate (Subsequent Sessions)
 

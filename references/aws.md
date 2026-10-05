@@ -6,12 +6,14 @@ The user's AWS account needs **IAM full access** or at minimum:
 - `iam:CreateGroup`, `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
 - `iam:AttachGroupPolicy` / `iam:PutGroupPolicy`
+- for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
 
 ## Team Member Prerequisites (Adding to Existing Setup)
 
 The user's AWS account needs:
 - `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
+- for rolling back a failed run: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`
 
 ## Multi-User Strategy
 
@@ -189,7 +191,7 @@ Use the AWS CLI (`aws`) if available in the environment. Otherwise, use signed A
 
 ## IAM Names
 
-First-Time Setup derives the group name and the user-name prefix from the repository and records them in `.cloud-config.json`: `service_account` holds the group, `iam_user_prefix` the user prefix. Every later workflow reads them back, so all members of one repo share one group and no two repos collide. Configs written before 1.5.0 have no `iam_user_prefix`; for them the snippets fall back to the old names (`claude-agents`, `claude-agent-<email>`), so existing users keep working. The user name is the prefix plus the sanitized email, capped at IAM's 64 characters with a hash suffix so distinct emails stay distinct.
+First-Time Setup derives the group name and the user-name prefix from the repository and records them in `.cloud-config.json`: `service_account` holds the group, `iam_user_prefix` the user prefix. Every later workflow reads them back, so all members of one repo share one group and no two repos collide. Configs written before 1.5.0 have no `iam_user_prefix`; for them the snippets fall back to the old names (`claude-agents`, `claude-agent-<email>`), so existing users keep working. The user name is the prefix plus the email: IAM user names allow `.` and `@`, so a plain email is used unchanged, and an email with any other character, or a name over IAM's 64-character limit, gets a hash of the email as suffix, so distinct emails never map to one user. (The pre-1.5.0 names replaced `.` and `@` with `-`; that rule is kept only for the old `claude-agent` prefix.)
 
 ## First-Time Setup: Create Group and First User
 
@@ -202,8 +204,19 @@ export AWS_SESSION_TOKEN="..."
 # Repo-scoped IAM names (see "IAM Names" above)
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
-  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
-  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    # Pre-1.5.0 name, kept so existing users still resolve to their user
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    # IAM allows . and @, so a plain email is kept as is; any other character
+    # is replaced and a hash of the email added, so distinct emails never
+    # share a name
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
   printf '%s' "$n"
 }
 
@@ -272,8 +285,19 @@ If a later setup step fails (attaching a policy, encrypting, committing), undo t
 # Repo-scoped IAM names (see "IAM Names" above)
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
-  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
-  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    # Pre-1.5.0 name, kept so existing users still resolve to their user
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    # IAM allows . and @, so a plain email is kept as is; any other character
+    # is replaced and a hash of the email added, so distinct emails never
+    # share a name
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
   printf '%s' "$n"
 }
 
@@ -284,18 +308,32 @@ GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
 IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
 
+# Undo the user this block created (its keys, membership, then the user), so a
+# failed run leaves nothing that blocks a retry at create-user. Never touches
+# the shared group.
+rollback_member() {
+  for k in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
+    aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"
+  done
+  aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" 2>/dev/null
+  aws iam delete-user --user-name "$IAM_USER"
+  rm -f credentials.json
+}
+
 # Create user and add to the existing group. Stop unless create-user succeeds:
-# EntityAlreadyExists (409) means another member's email normalized to the same
-# name, and continuing would hand this member that member's identity.
+# EntityAlreadyExists (409) means a user of this name already exists, and
+# continuing would hand this member that user's identity. Nothing was created
+# then, so there is nothing to roll back.
 if ! aws iam create-user --user-name "$IAM_USER"; then
   echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
   exit 1
 fi
-aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" || exit 1
+aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
+  || { echo "ERROR: add-user-to-group failed; rolling back."; rollback_member; exit 1; }
 
 # Create access key
 (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json) \
-  || { rm -f credentials.json; exit 1; }
+  || { echo "ERROR: create-access-key failed; rolling back."; rollback_member; exit 1; }
 
 # Reformat — read region from existing config. In multi-provider mode the
 # region lives inside the matching providers[] entry, not at the top level.
@@ -307,6 +345,8 @@ cat credentials.json | jq --arg region "$AWS_REGION" '{
 }' > credentials_clean.json
 mv credentials_clean.json credentials.json
 ```
+
+If a later step fails (encrypting, committing), run `rollback_member` from the same shell before retrying.
 
 ## Grant Roles (Attach Policies to Group)
 
@@ -399,8 +439,19 @@ Remove a team member (if they leave):
 # Repo-scoped IAM names (see "IAM Names" above)
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
-  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
-  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    # Pre-1.5.0 name, kept so existing users still resolve to their user
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    # IAM allows . and @, so a plain email is kept as is; any other character
+    # is replaced and a hash of the email added, so distinct emails never
+    # share a name
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
   printf '%s' "$n"
 }
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"

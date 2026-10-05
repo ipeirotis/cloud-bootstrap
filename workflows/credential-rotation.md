@@ -36,15 +36,29 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
 5. Verify the **new** key works before touching the old one. The provider smoke test alone is not enough: the CLI is still logged in as the old key (or the bootstrap admin), so it would pass without using the replacement. Activate `credentials.json` in an isolated config and confirm the caller identity:
-   - **GCP:**
+   - **GCP** (a new key can take a minute or more to work, so retry with backoff before giving up; `PROJECT_ID`, `SA_EMAIL`, and `TOKEN` as in "Create Key"):
      ```bash
-     TMPCFG=$(mktemp -d)
-     if env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json \
-        && env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth print-access-token >/dev/null; then
+     NEW_KEY_ID=$(jq -r .private_key_id credentials.json)
+     TMPCFG=$(mktemp -d); VERIFIED=""
+     for delay in 0 10 20 40 80; do
+       sleep "$delay"
+       if env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json 2>/dev/null \
+          && env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth print-access-token >/dev/null 2>&1; then
+         VERIFIED=1; break
+       fi
+     done
+     if [ -n "$VERIFIED" ]; then
        env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud config get-value account
        rm -rf "$TMPCFG"
      else
-       rm -rf "$TMPCFG"; echo "ERROR: the replacement key failed verification; do not encrypt it or revoke the old key."; exit 1
+       # Leave nothing behind: delete the unverified replacement key and its plaintext
+       rm -rf "$TMPCFG"
+       curl -sS --fail -X DELETE \
+         "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$NEW_KEY_ID" \
+         -H "Authorization: Bearer $TOKEN" >/dev/null \
+         || echo "WARNING: could not delete replacement key $NEW_KEY_ID; delete it via Key Management."
+       rm -f credentials.json
+       echo "ERROR: the replacement key failed verification; nothing was encrypted and the old key was not revoked by this step."; exit 1
      fi
      ```
    - **AWS** (new keys can take a few seconds to propagate):
@@ -99,9 +113,16 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 7. **Do not reset the shared top-level `created_at`** in `.cloud-config.json` — that field is repo-wide, so bumping it makes every other team member's still-old `.cloud-credentials.*.enc` look freshly rotated and suppresses their 180-day age warning. Credential age is tracked **per file** via each `.enc` file's git commit time (the Authenticate age check uses that), so committing the rotated file in the next step updates only this user's age. (If you maintain optional per-file age metadata, update only this credential's entry — never the shared timestamp.)
-8. Commit the updated encrypted credentials file.
+8. **GCP:** set this member's `key_ids` entry in `.cloud-config.json` to `NEW_KEY_ID` ("Record the key's owner" in gcp.md, with `KEY_ID="$NEW_KEY_ID"`). Commit the updated encrypted credentials file (and, for GCP, `.cloud-config.json`).
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
-   - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's *previous* key, delete it.
+   - **GCP:** delete `OLD_KEY_ID`, failing on any HTTP error so a rejected delete is not mistaken for a revoked key:
+     ```bash
+     [ -n "$OLD_KEY_ID" ] || { echo "ERROR: capture OLD_KEY_ID (step 3) first."; exit 1; }
+     curl -sS --fail -X DELETE \
+       "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$OLD_KEY_ID" \
+       -H "Authorization: Bearer $TOKEN" \
+       || { echo "ERROR: old key $OLD_KEY_ID is still active; retry with a fresh token."; exit 1; }
+     ```
    - **AWS:** Delete the old access key, with `IAM_USER` as derived in step 3 (it must not be empty):
      ```bash
      [ -n "$IAM_USER" ] && [ -n "$OLD_KEY_ID" ] || { echo "ERROR: derive IAM_USER and OLD_KEY_ID (step 3) first."; exit 1; }
