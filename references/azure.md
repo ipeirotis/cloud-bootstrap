@@ -434,11 +434,12 @@ discard_unknown_secret() {
     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
   exit 1
 }
-(umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
+# (if/else so the status is captured even under `set -e`)
+if (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
-  > "$RESP_DIR/secret.json"); RC=$?
+  > "$RESP_DIR/secret.json"); then RC=0; else RC=$?; fi
 [ "$RC" -ne 22 ] || { echo "ERROR: Graph rejected addPassword; no secret was created."; exit 1; }
 [ "$RC" -eq 0 ] || discard_unknown_secret "addPassword outcome unknown (curl exit $RC)"
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
@@ -488,8 +489,13 @@ Remove a team member's secrets (if they leave), with `OBJECT_ID` resolved as abo
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
 [ -n "$OBJECT_ID" ] || { echo "ERROR: resolve OBJECT_ID first."; exit 1; }
-IDS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end)
-  | ([.key_ids[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end)) | unique | .[]' .cloud-config.json)
+# Every recorded credential of this member: current (key_ids), queued old ones
+# (revoke_pending), one an interrupted rotation saved (rotating), and any a
+# failed cleanup recorded as unrevoked
+IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
+  ([.unrevoked[]? | select(.provider == "azure" and .member == $e) | .id | split("/") | last]) as $u
+  | (if .providers then (.providers[] | select(.provider=="azure")) else . end)
+  | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 [ -n "$IDS" ] || { echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1; }
 FAILED=""
@@ -502,8 +508,11 @@ for ID in $IDS; do
     jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
         | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
-        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end);
-      if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
+        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
+        | (if .rotating[$e] == $id then del(.rotating[$e]) else . end);
+      .unrevoked = [(.unrevoked // [])[] | select(.provider != "azure" or .member != $e or (.id | split("/") | last) != $id)]
+      | if .unrevoked == [] then del(.unrevoked) else . end
+      | if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
       .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
       || { echo "ERROR: secret $ID removed but .cloud-config.json not updated."; FAILED="$FAILED $ID"; }
   else

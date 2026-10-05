@@ -42,6 +42,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- GCP and Azure offboarding also revoke the member's `rotating` ID and any `unrevoked` entries recorded for them, clearing each record once gone.
+- The ambiguous-failure checks for GCP key and Azure secret creation capture curl's status with `if`/`else`, so they also run under `set -e`.
+- Rotation step 6 (and step 8) resolve and require the passphrase themselves, so a fresh shell never re-encrypts with an empty passphrase.
 - GCP Create Key lists the account's keys first and, if the create call fails ambiguously, revokes any key that appeared; Azure first-time cleanup finds a half-created app by its unique name; the first Azure secret is labelled with the member's email.
 - First-time setup records the Azure secret's keyId in `key_ids`; rotation requires the new Azure keyId before changing records, and checks the AWS account before creating a replacement key.
 - Manual GCP activation persists `GOOGLE_APPLICATION_CREDENTIALS` to `CLAUDE_ENV_FILE`; the README no longer calls AWS and Azure membership unlimited.

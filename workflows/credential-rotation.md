@@ -140,6 +140,11 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      PROVIDER=$(jq -r .provider .cloud-config.json 2>/dev/null)
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
+   # Fresh shell: resolve the passphrase here (as step 2 does) and require it;
+   # an empty passphrase would produce a file the configured key cannot open
+   case "$PROVIDER" in gcp) KVAR=GCP_CREDENTIALS_KEY ;; aws) KVAR=AWS_CREDENTIALS_KEY ;; azure) KVAR=AZURE_CREDENTIALS_KEY ;; esac
+   KEY="${KEY:-${!KVAR:-${CLOUD_CREDENTIALS_KEY:-}}}"
+   [ -n "$KEY" ] || { echo "ERROR: no passphrase for $PROVIDER; set ${KVAR:-CLOUD_CREDENTIALS_KEY} and re-run this step."; exit 1; }
    # Encrypt to a private temp file in the same directory, prove it decrypts
    # to the new key, and only then replace ENC_FILE in one rename. A failed or
    # interrupted write never truncates the current credential; on failure the
@@ -171,6 +176,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    # Fresh shell: resolve the passphrase and file as steps 2 and 6 do
    case "$PROVIDER" in gcp) KVAR=GCP_CREDENTIALS_KEY ;; aws) KVAR=AWS_CREDENTIALS_KEY ;; azure) KVAR=AZURE_CREDENTIALS_KEY ;; esac
    KEY="${KEY:-${!KVAR:-${CLOUD_CREDENTIALS_KEY:-}}}"
+   [ -n "$KEY" ] || { echo "ERROR: no passphrase for $PROVIDER; set $KVAR and re-run this step."; exit 1; }
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
      ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
    else

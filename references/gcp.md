@@ -293,10 +293,11 @@ KEYS_BEFORE=$(list_keys) || { echo "ERROR: could not list the account's keys; no
 # Fail on HTTP errors and validate the response before writing a key file, so
 # an error body is never decoded into credentials.json and encrypted.
 RESP=$(umask 077 && mktemp)
-curl -sS --fail -X POST "$KEYS_URL" \
+# (if/else so the status is captured even under `set -e`)
+if curl -sS --fail -X POST "$KEYS_URL" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; RC=$?
+  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; then RC=0; else RC=$?; fi
 if [ "$RC" -ne 0 ]; then
   rm -f "$RESP"
   # curl exit 22: Google rejected the request, so no key exists. Anything else
@@ -376,8 +377,13 @@ PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.p
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
 # The member's current key plus any old keys still awaiting revocation
-IDS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end)
-  | ([.key_ids[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end)) | unique | .[]' .cloud-config.json)
+# Every recorded credential of this member: current (key_ids), queued old ones
+# (revoke_pending), one an interrupted rotation saved (rotating), and any a
+# failed cleanup recorded as unrevoked
+IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
+  ([.unrevoked[]? | select(.provider == "gcp" and .member == $e) | .id | split("/") | last]) as $u
+  | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
+  | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 [ -n "$IDS" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
 # Each ID leaves the config only once Google confirms it is gone (deleted now,
 # or 404 because it already was); the .enc file goes only when every key is.
@@ -391,8 +397,11 @@ for ID in $IDS; do
     jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
         | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
-        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end);
-      if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
+        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
+        | (if .rotating[$e] == $id then del(.rotating[$e]) else . end);
+      .unrevoked = [(.unrevoked // [])[] | select(.provider != "gcp" or .member != $e or (.id | split("/") | last) != $id)]
+      | if .unrevoked == [] then del(.unrevoked) else . end
+      | if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
       else clr end' .cloud-config.json > .cloud-config.json.tmp \
       && mv .cloud-config.json.tmp .cloud-config.json \
       || { echo "ERROR: key $ID is deleted but .cloud-config.json could not be updated."; FAILED="$FAILED $ID"; }
