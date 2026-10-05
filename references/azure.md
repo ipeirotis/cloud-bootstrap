@@ -415,12 +415,15 @@ NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' secret.json)
   || { rm -f secret.json; echo "ERROR: addPassword response has no secretText or keyId."; exit 1; }
 echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
 
-# Assemble credentials (appId and tenant are the same for all team members)
+# Assemble credentials (appId and tenant are the same for all team members).
+# keyId (not secret) identifies exactly this secret for later cleanup and
+# rotation, even when several runs use the same member label.
 (umask 077 && jq -n \
   --arg appId "$APP_ID" \
   --arg password "$SECRET" \
   --arg tenant "$TENANT_ID" \
-  '{appId: $appId, password: $password, tenant: $tenant}' > credentials.json)
+  --arg keyId "$NEW_SECRET_KEY_ID" \
+  '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
 
 rm -f secret.json
 ```
@@ -442,7 +445,7 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Delete their credential file (`.cloud-credentials.azure.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`) only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
+Remove a specific client secret (if a team member leaves), with `OBJECT_ID` resolved as above. Remove every secret the member still has: the current one and any `keyId` in their `revoke_pending` list in `.cloud-config.json` (old secrets a rotation could not remove yet). Delete their credential file (`.cloud-credentials.azure.<email>.enc` when `.cloud-config.json` has a `providers` array, else `.cloud-credentials.<email>.enc`) only after Graph confirms the removal (HTTP 204), so the repo never drops the record of a secret that is still live:
 
 ```bash
 KEY_ID="KEY_ID_TO_REMOVE"

@@ -57,7 +57,10 @@ case "$PROVIDER" in
       "") NAME="" ;;
       *) NAME="projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" ;;
     esac
-    if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ] && [ -n "$PROJECT_ID$SA_EMAIL" ] \
+    # A full resource name needs nothing else; a bare ID needs the project and
+    # service account (checked when the name was built above)
+    case "$NAME" in projects/?*/serviceAccounts/?*/keys/?*) ;; *) NAME="" ;; esac
+    if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ] \
        && curl -sS --fail -X DELETE "https://iam.googleapis.com/v1/$NAME" \
             -H "Authorization: Bearer $TOKEN" >/dev/null; then
       echo "Deleted GCP key ${NAME##*/}."; STATUS=0
@@ -95,8 +98,9 @@ case "$PROVIDER" in
         --data-urlencode "\$filter=appId eq '$APP_ID'" \
         -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
     fi
-    # The new secret: given, else the newest one carrying this member's label
-    KID="${CRED_ID:-${NEW_SECRET_KEY_ID:-}}"
+    # The new secret: given, else the keyId stored with the credential, else
+    # (older credentials) the newest secret carrying this member's label
+    KID="${CRED_ID:-${NEW_SECRET_KEY_ID:-$(cred .keyId)}}"
     if [ -z "$KID" ] && [ -n "$OBJECT_ID" ]; then
       KID=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
         -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$USER_EMAIL" \
