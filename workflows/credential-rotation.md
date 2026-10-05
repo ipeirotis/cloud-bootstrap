@@ -48,6 +48,13 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      # aws_cfg and iam_user_name helpers first
      USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
      IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
+     # The bootstrap credentials must belong to this repo's account, or the key
+     # would be created for a same-named user elsewhere
+     AWS_ACCOUNT_ID=$(aws_cfg project_id)
+     CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+       || { echo "ERROR: could not identify the bootstrap credentials' account; nothing created."; exit 1; }
+     [ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+       || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing created."; exit 1; }
      (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json)
      # then reformat (access_key_id/secret_access_key/region) as in aws.md
      ```
@@ -172,7 +179,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    # The new key's ID, read back from the re-encrypted file
    NEW_KEY_ID="${NEW_KEY_ID:-$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
      | jq -r '.private_key_id // .access_key_id // .keyId // empty')}"
-   if [ "$PROVIDER" = gcp ] && [ -z "$NEW_KEY_ID" ]; then
+   if [ "$PROVIDER" != aws ] && [ -z "$NEW_KEY_ID" ]; then
      echo "ERROR: could not read the new key ID from $ENC_FILE; nothing recorded."; exit 1
    fi
    OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.rotating[$e]')}"

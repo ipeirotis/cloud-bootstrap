@@ -167,8 +167,8 @@ You can also check your installed version at any time: `cat .claude/skills/cloud
 | Provider | Bootstrap Command | What Gets Created | Team Limit |
 |----------|------------------|-------------------|------------|
 | GCP | `gcloud auth print-access-token` | Service account + JSON key per user | ~10 (keys per SA) |
-| AWS | `aws sts get-session-token` | IAM group + IAM user per team member | Unlimited |
-| Azure | `az account get-access-token` | Service principal + client secret per user | Unlimited |
+| AWS | `aws sts get-session-token` | IAM group + IAM user per team member | Bounded by the account's IAM user quota |
+| Azure | `az account get-access-token` | Service principal + client secret per user | Bounded: secrets share the app manifest's credential limit, and rotated or departed members' secrets count until removed |
 
 ## Files Created in Your Repo
 

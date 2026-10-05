@@ -282,15 +282,31 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 # Create Service Account printed, and a guess could name another account.
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
 
+# List the account's keys first: if the create call fails ambiguously (the key
+# may exist at Google even though no usable response arrived here), any key
+# that is new relative to this list is ours to revoke.
+KEYS_URL="https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys"
+list_keys() { curl -sS --fail -G "$KEYS_URL" --data-urlencode "keyTypes=USER_MANAGED" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.keys[]?.name'; }
+KEYS_BEFORE=$(list_keys) || { echo "ERROR: could not list the account's keys; nothing created."; exit 1; }
+
 # Fail on HTTP errors and validate the response before writing a key file, so
 # an error body is never decoded into credentials.json and encrypted.
 RESP=$(umask 077 && mktemp)
-if ! curl -sS --fail -X POST \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
+curl -sS --fail -X POST "$KEYS_URL" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; then
-  echo "ERROR: key creation failed."; rm -f "$RESP"; exit 1
+  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; RC=$?
+if [ "$RC" -ne 0 ]; then
+  rm -f "$RESP"
+  # curl exit 22: Google rejected the request, so no key exists. Anything else
+  # (a local write error, a dropped connection) leaves the outcome unknown.
+  [ "$RC" -eq 22 ] && { echo "ERROR: key creation was rejected; no key was created."; exit 1; }
+  echo "ERROR: key creation outcome unknown (curl exit $RC); revoking any key it created."
+  for NAME in $(list_keys | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE")); do
+    CRED_ID="$NAME" TOKEN="$TOKEN" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
+  done
+  exit 1
 fi
 # The key now exists at Google. Keep its resource name until the local file is
 # validated; on any local failure, delete the key so it is not left orphaned.
@@ -416,7 +432,12 @@ gcloud auth activate-service-account --key-file="$ADC_KEY"
 # Provider-aware project: in multi-provider repos project_id is in providers[].
 gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end)' .cloud-config.json)"
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
-# If running outside the same shell, persist via $CLAUDE_ENV_FILE (see hook).
+# Persist for the rest of the session: snippets run in short-lived shells, and
+# Python clients in later commands need GOOGLE_APPLICATION_CREDENTIALS too
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
+fi
 ```
 
 Do **not** delete the decrypted key while the session is using it for ADC; it

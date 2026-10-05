@@ -225,6 +225,13 @@ APP_OBJECT_ID=""
 # outside the repo, removed on any exit, including an interruption
 RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
 cleanup_failed_setup() {
+  # If the create call failed after Graph made the app (no ID came back),
+  # find it by its unique per-run name
+  if [ -z "$APP_OBJECT_ID" ] && [ -n "${SP_NAME:-}" ]; then
+    APP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+      --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
+      -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty') || APP_OBJECT_ID=""
+  fi
   if [ -n "$APP_OBJECT_ID" ]; then
     curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
       -H "Authorization: Bearer $GRAPH_TOKEN" >/dev/null \
@@ -265,7 +272,7 @@ APP_OBJECT_ID=$(jq -r '.id // empty' "$RESP_DIR/app.json")
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"passwordCredential": {"displayName": "claude-code"}}' > "$RESP_DIR/secret.json")
+  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-$(git config user.email)\"}}" > "$RESP_DIR/secret.json")
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
 [ -n "$SECRET" ] && [ -n "$SECRET_KEY_ID" ] || { echo "ERROR: addPassword response lacks secretText or keyId."; false; }

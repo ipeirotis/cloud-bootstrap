@@ -74,13 +74,13 @@ Using the bootstrap token and provider-specific commands from the reference file
      "tenant": "<Azure tenant ID, omit for GCP/AWS>",
      "region": "<AWS region, omit for GCP/Azure>",
      "iam_user_prefix": "<AWS user-name prefix, omit for GCP/Azure>",
-     "key_ids": {"<email>": "<GCP key ID, omit for AWS/Azure>"},
+     "key_ids": {"<email>": "<GCP key ID or Azure secret keyId, omit for AWS>"},
      "roles": ["<role1>", "<role2>"],
      "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    }
    EOF
    ```
-   For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`).
+   For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
 7. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json
