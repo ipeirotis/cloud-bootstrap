@@ -188,7 +188,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    # The new key's ID, read back from the re-encrypted file
    NEW_KEY_ID="${NEW_KEY_ID:-$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
      | jq -r '.private_key_id // .access_key_id // .keyId // empty')}"
-   if [ "$PROVIDER" != aws ] && [ -z "$NEW_KEY_ID" ]; then
+   # Every provider needs it: an unreadable replacement must never let the old,
+   # working key be queued for revocation
+   if [ -z "$NEW_KEY_ID" ]; then
      echo "ERROR: could not read the new key ID from $ENC_FILE; nothing recorded."; exit 1
    fi
    # A rerun after this step already succeeded (before the commit): rotating is
@@ -237,6 +239,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    IDS=$(printf '%s\n' $IDS | sort -u)
    [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no OLD_KEY_ID, no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }
    case "$PROVIDER" in
+     aws)
+       # A key lookup in the wrong account reports NoSuchEntity, which would
+       # clear the record of a key still live in this repo's account
+       AWS_ACCOUNT_ID=$(pcfg .project_id)
+       CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+         || { echo "ERROR: could not identify the bootstrap credentials' account; nothing revoked."; exit 1; }
+       [ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+         || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing revoked."; exit 1; } ;;
      gcp)
        PROJECT_ID=$(pcfg .project_id); SA_EMAIL=$(pcfg .service_account)
        [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: no GCP project/service account in config."; exit 1; } ;;

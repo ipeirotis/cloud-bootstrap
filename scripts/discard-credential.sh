@@ -73,6 +73,14 @@ case "$PROVIDER" in
     fi ;;
   aws)
     AK="${CRED_ID:-$(cred '.access_key_id // .AccessKey.AccessKeyId')}"
+    # Only in this repo's account: elsewhere the key lookup reports NoSuchEntity
+    # (read below as "already gone") and a same-named user could be deleted
+    ACCOUNT="$(cfg project_id)"
+    CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+    if [ -n "$ACCOUNT" ] && [ "$CALLER" != "$ACCOUNT" ]; then
+      record_unrevoked "${AK:-unknown access key}" "bootstrap credentials are for account ${CALLER:-unknown}, not $ACCOUNT"
+      rm -f "$CREDS" credentials_clean.json; exit 1
+    fi
     # The key's owner, from AWS itself: correct even when no IAM name is known here
     U=""; LOOKUP=""
     if [ -n "$AK" ]; then
