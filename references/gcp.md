@@ -186,11 +186,17 @@ All API calls use `curl -H "Authorization: Bearer $TOKEN"` against `https://` en
 ## Create Service Account
 
 ```bash
-# Create the service account. Stop on any HTTP error: a 409 means a
-# `claude-agent` account already exists in this project, and granting roles to
-# or creating keys for that pre-existing account would hand out an identity this
-# setup did not create. Agree a different accountId with the user instead.
-SA_ID="${SA_ID:-claude-agent}"
+# Create the service account. Stop on any HTTP error: a 409 means an account
+# with this ID already exists in this project, and granting roles to or
+# creating keys for that pre-existing account would hand out an identity this
+# setup did not create. The default ID has a random per-run suffix, so a
+# concurrent setup never targets the same account; an account found under it
+# after an ambiguous failure is this run's. Keep SA_ID (or the user's own
+# choice) for every later snippet.
+if [ -z "${SA_ID:-}" ]; then
+  SA_ID="claude-agent-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"; SA_ID_GENERATED=1
+fi
+echo "Service account ID for this setup: $SA_ID"
 SA_URL="https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_ID@$PROJECT_ID.iam.gserviceaccount.com"
 sa_exists() {   # 0 = exists, 1 = absent (HTTP 404), 2 = could not tell
   case "$(curl -sS -o /dev/null -w '%{http_code}' "$SA_URL" -H "Authorization: Bearer $TOKEN")" in
@@ -231,7 +237,11 @@ case "$RC:$HTTP" in
               # It did not exist before, so if it exists now, this call made it.
     rm -f "$RESP"
     if sa_exists; then S=0; else S=$?; fi
-    if [ "$S" = 0 ]; then
+    if [ "$S" = 0 ] && [ "${SA_ID_GENERATED:-}" != 1 ]; then
+      # A chosen ID could also be another run's: keep the account for the user
+      # to check, recorded in .cloud-setup-pending.json for the rollback
+      echo "WARNING: $SA_ID exists now; if no other setup created it, run Rollback a Failed Setup."
+    elif [ "$S" = 0 ]; then
       curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
         && { echo "Removed $SA_ID, which the failed call had created."; rm -f .cloud-setup-pending.json; } \
         || echo "WARNING: could not delete $SA_ID; run Rollback a Failed Setup before retrying."
@@ -293,7 +303,7 @@ else
 fi
 ```
 
-`SA_EMAIL` (normally `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`, or `$SA_ID@...` if the user chose another id) is the identity every later step binds to: grant roles to it, create its key, and record it as `service_account` in `.cloud-config.json`.
+`SA_EMAIL` (`$SA_ID@$PROJECT_ID.iam.gserviceaccount.com`: by default `claude-agent-<random suffix>`, or the ID the user chose) is the identity every later step binds to: grant roles to it, create its key, and record it as `service_account` in `.cloud-config.json`.
 
 ## Grant Roles
 

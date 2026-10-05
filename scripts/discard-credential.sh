@@ -86,6 +86,22 @@ case "$PROVIDER" in
     if [ -n "$AK" ]; then
       if OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
       then U="$OUT"; else LOOKUP="$OUT"; fi
+    elif [ "$MODE" = member ]; then
+      # No key ID (interrupted before create-access-key's output was saved):
+      # the new member's user is the repo-scoped name for this email, as
+      # references/aws.md derives it. A credentials.json exists only once that
+      # user was created by this run, so it is this run's user.
+      PREFIX="$(cfg iam_user_prefix)"; PREFIX="${PREFIX:-claude-agent}"
+      H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
+      if [ "$PREFIX" = "claude-agent" ]; then
+        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+      else
+        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+        [ "$N" = "$PREFIX-$USER_EMAIL" ] || N="${N:0:55}-$H"
+      fi
+      [ ${#N} -le 64 ] || N="${N:0:55}-$H"
+      if OUT=$(aws iam get-user --user-name "$N" --query User.UserName --output text 2>&1)
+      then U="$OUT"; AK="(all keys of $N)"; else LOOKUP="$OUT"; AK="(user $N)"; fi
     fi
     if [ -z "$U" ] && printf '%s' "$LOOKUP" | grep -q NoSuchEntity; then
       # The key (or its user) no longer exists: an earlier attempt removed it

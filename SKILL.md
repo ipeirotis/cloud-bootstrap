@@ -77,6 +77,7 @@ resolve_credentials_key gcp || exit 1
 Determine the current user's email, then:
 
 0. **First, look for an interrupted run.** First-time setup and adding a provider record the new identity's non-secret names in `.cloud-setup-pending.json` before creating it; setup, Add Team Member and rotation keep the new credential's plaintext in `credentials.json` at the repository root until all their bookkeeping is done, and encrypt through a `.cloud-credentials.*.tmp.*` file. If any of these exists, a previous run stopped part-way (possibly in another shell, where no trap could clean up) and a live provider credential may be untracked. Do not start a new workflow; follow "Recovering an Interrupted Run" below first.
+   Also check `.cloud-config.json` (in any `providers[]` entry) for `rotating[<user-email>]` or `revoked_early[<user-email>]`. Either one means this user's rotation stopped before step 8 recorded the replacement: read `workflows/credential-rotation.md` and resume it at step 4, never Authenticate. After `revoked_early` the old key is already deleted, so the current `.enc` no longer works until the replacement exists.
 1. If `.cloud-config.json` does NOT exist → read `workflows/first-time-setup.md`
 2. If `.cloud-config.json` exists, check for the user's encrypted credentials file. The file may use **either** naming convention:
    - Single-provider: `.cloud-credentials.<user-email>.enc`

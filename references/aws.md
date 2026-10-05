@@ -120,6 +120,16 @@ export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
 # profile selection) here and for the rest of the session below.
 unset AWS_SESSION_TOKEN AWS_PROFILE
 
+# Use the keys only in this repo's account: a stale or copied file could hold
+# valid keys for another account, and every later command would run there
+ACCOUNT=$(jq -r '.project_id // empty' "$CONFIG" 2>/dev/null)
+CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
+  echo "WARNING: $ENC_FILE is for AWS account ${CALLER:-unknown (lookup failed)}, not ${ACCOUNT:-the configured one}; not activating it."
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+  exit 0
+fi
+
 # Persist env vars for the session via CLAUDE_ENV_FILE. Persist the aws CLI
 # bin dir too: if it was just installed under /home/user/bin, later session
 # shells would otherwise have valid AWS_* vars but still hit "aws: command

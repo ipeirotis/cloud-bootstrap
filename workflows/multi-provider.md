@@ -201,6 +201,14 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
       # Long-lived IAM-user keys: drop any stale STS session token or profile
       unset AWS_SESSION_TOKEN AWS_PROFILE
+      # Only in this repo's account (a stale or copied file could hold another's)
+      ACCOUNT=$(jq -r ".providers[$i].project_id // empty" "$CONFIG")
+      CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+      if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
+        echo "WARNING: $ENC_FILE is for AWS account ${CALLER:-unknown (lookup failed)}, not ${ACCOUNT:-the configured one}; not activating it."
+        unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+        rm -f /tmp/credentials.json; continue
+      fi
       if [ -n "$CLAUDE_ENV_FILE" ]; then
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
