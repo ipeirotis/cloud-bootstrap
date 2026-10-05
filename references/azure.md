@@ -45,6 +45,10 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
 # Hooks run in the session's current directory, which may be a subdirectory
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Log out an earlier activation in this container (az keeps its login in a
+# persistent token cache) whenever this run exits without renewing it
+trap '[ "${AZ_ACTIVATED:-}" = 1 ] || { command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true; }; rm -f /tmp/credentials.json' EXIT
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -82,7 +86,7 @@ if ! command -v az &> /dev/null; then
 fi
 
 # --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
-trap 'rm -f /tmp/credentials.json' EXIT
+# (the EXIT trap set above also removes /tmp/credentials.json)
 if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check AZURE_CREDENTIALS_KEY or .enc file integrity."
@@ -122,6 +126,7 @@ if [ -n "$CLAUDE_ENV_FILE" ] && command -v az &>/dev/null; then
     echo "export PATH=\"$AZ_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
 fi
 
+AZ_ACTIVATED=1
 echo "Azure credentials activated for $USER_EMAIL"
 ```
 
@@ -354,12 +359,18 @@ if [ -n "$APP_OBJECT_ID" ]; then
   # Role assignments are not removed with the service principal (they linger as
   # "Identity not found" and count against the subscription's quota): delete
   # the ones setup granted first. Needs ARM_TOKEN and SUBSCRIPTION_ID.
-  APP_ID=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.appId // empty')
-  SP_OBJECT_ID=$( [ -n "$APP_ID" ] && curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
-    --data-urlencode "\$filter=appId eq '$APP_ID'" \
-    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
-  RA_OK=1
+  # Each lookup must succeed: an empty answer from a failed call would skip the
+  # role assignments and then delete the application they belong to
+  RA_OK=1; SP_OBJECT_ID=""
+  if R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+         -H "Authorization: Bearer $GRAPH_TOKEN") \
+     && APP_ID=$(printf '%s' "$R" | jq -r '.appId // empty') && [ -n "$APP_ID" ] \
+     && R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
+         --data-urlencode "\$filter=appId eq '$APP_ID'" -H "Authorization: Bearer $GRAPH_TOKEN"); then
+    SP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')   # empty: no service principal was created
+  else
+    RA_OK=0; echo "ERROR: could not look up the application or its service principal."
+  fi
   if [ -n "$SP_OBJECT_ID" ]; then
     if [ -z "${ARM_TOKEN:-}" ] || [ -z "${SUBSCRIPTION_ID:-}" ]; then
       RA_OK=0; echo "ERROR: set ARM_TOKEN and SUBSCRIPTION_ID so the role assignments can be removed."

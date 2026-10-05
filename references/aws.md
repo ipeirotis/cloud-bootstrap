@@ -63,6 +63,17 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
 # Hooks run in the session's current directory, which may be a subdirectory
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Undo an earlier activation in this container (the exported keys persisted
+# for the session) whenever this run exits without renewing it: a removed
+# passphrase or a broken file must disable repository auth
+clear_prior_aws() {
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+  fi
+}
+trap '[ "${AWS_ACTIVATED:-}" = 1 ] || clear_prior_aws; rm -f /tmp/credentials.json' EXIT
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -106,7 +117,7 @@ if ! command -v aws &> /dev/null; then
 fi
 
 # --- Decrypt credentials (restrictive permissions + guaranteed cleanup) ---
-trap 'rm -f /tmp/credentials.json' EXIT
+# (the EXIT trap set above also removes /tmp/credentials.json)
 if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
   echo "WARNING: Failed to decrypt credentials — check AWS_CREDENTIALS_KEY or .enc file integrity."
@@ -151,6 +162,8 @@ fi
 # shells would otherwise have valid AWS_* vars but still hit "aws: command
 # not found".
 if [ -n "$CLAUDE_ENV_FILE" ]; then
+  # Drop an unset an earlier failed run left, so the exports below take effect
+  sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
   echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
   echo "export AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION'" >> "$CLAUDE_ENV_FILE"
@@ -160,6 +173,7 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
     echo "export PATH=\"$AWS_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
 fi
 
+AWS_ACTIVATED=1
 echo "AWS credentials activated for $USER_EMAIL"
 ```
 
@@ -560,6 +574,18 @@ export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
 export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)
 rm -f /tmp/credentials.json
 
+# Persist nothing unless these keys are this member's user in this repo's
+# account (a stale or copied file could hold another account's or user's keys)
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
+ACCOUNT=$(aws_cfg project_id); PREFIX=$(aws_cfg iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
+WANT_USER=$(iam_user_name "$(git config user.email)" "$PREFIX")   # helper from "IAM Names"
+read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
+if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+  echo "ERROR: these keys are for ${CALLER_ARN:-an unknown identity}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activated."
+  exit 1
+fi
+
 # Persist for the rest of the session, not just this shell. SessionStart and
 # one-off snippets run in short-lived subprocesses, so later AWS CLI commands
 # in new shells would otherwise lose these exports. $CLAUDE_ENV_FILE is the
@@ -572,8 +598,7 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   } >> "$CLAUDE_ENV_FILE"
 fi
 
-# Verify
-aws sts get-caller-identity
+echo "Activated as $CALLER_ARN"
 ```
 
 **Note:** Unlike GCP, AWS credentials are exported as environment variables, not activated via a CLI command. Persisting them to `$CLAUDE_ENV_FILE` keeps them available across the session's shells (the SessionStart hook does this too); otherwise they only live for the current shell.

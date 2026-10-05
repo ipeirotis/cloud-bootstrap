@@ -47,9 +47,9 @@ If `.cloud-config.json` has a top-level `provider` field (single-provider format
 2. **Provision the new provider** exactly as First-Time Setup does for it: resolve that provider's encryption key first (stop if missing), propose roles and get the user's approval, get its bootstrap token, create the identity, grant only the approved roles, generate its credentials, and encrypt them to `.cloud-credentials.<new-provider>.<email>.enc`. The creation snippet records the new identity's names in `.cloud-setup-pending.json` (make sure `.gitignore` has `/.cloud-setup-pending.json` next to `/credentials.json`). Keep `credentials.json` and that file until step 4 has written the new entry: if the run is interrupted before then, the next session finds them and rolls the new identity back ("Recovering an Interrupted Run" in SKILL.md); a failure in this step needs the provider's "Rollback a Failed Setup" too.
    Until step 4, `.cloud-config.json` still describes only the old provider, and the reference snippets read config only for an entry whose `provider` matches, so they find nothing for the new one. Set the new provider's identifiers at the top of every snippet you run, since each snippet may run in a fresh shell: GCP `PROJECT_ID` and `SA_EMAIL`; AWS `GROUP_NAME`, `USER_PREFIX`, and `AWS_REGION`; Azure `SUBSCRIPTION_ID`, `TENANT_ID`, and `APP_ID`. Keep them for step 4.
 3. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc` with `git mv`, without committing yet: a commit holding only the rename would leave a checkout whose single-provider config no longer matches its file names. The rename is committed together with the new provider's `.enc` and the rewritten config (step 6); renaming does not change the files' contents, and the hooks' age check reads `git log --follow --diff-filter=AM`, which follows the rename and ignores it, so a migrated key keeps its real age.
-4. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one, and keep a top-level `unrevoked` list unchanged at the root: its entries already name their provider, and they are the only record of credentials still to revoke. Move everything else of the old top-level object (including `key_ids`, `rotating`, `revoke_pending` and `revoked_early`) into the existing provider's entry; for example `jq --argjson new "$NEW_ENTRY" '{providers: [del(.unrevoked), $new]} + (if .unrevoked then {unrevoked} else {} end)' .cloud-config.json`. Each entry has its own `roles` and `created_at`. A new GCP or Azure entry also gets its `key_ids`: the GCP key ID or the Azure secret's `keyId`, read from `credentials.json` (`jq -r .private_key_id` for GCP, `jq -r .keyId` for Azure; it is not secret). Only now, with the files renamed and the config describing both providers, delete the plaintext and the pending record: `rm -f credentials.json .cloud-setup-pending.json`. Until then they mark the migration as unfinished, so an interrupted run is recovered (finishing steps 3 and 4) rather than read as a missing credential.
+4. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one, and keep a top-level `unrevoked` list unchanged at the root: its entries already name their provider, and they are the only record of credentials still to revoke. Move everything else of the old top-level object (including `key_ids`, `rotating`, `revoke_pending` and `revoked_early`) into the existing provider's entry; for example `jq --argjson new "$NEW_ENTRY" '{providers: [del(.unrevoked), $new]} + (if .unrevoked then {unrevoked} else {} end)' .cloud-config.json`. Each entry has its own `roles` and `created_at`. A new GCP or Azure entry also gets its `key_ids`: the GCP key ID or the Azure secret's `keyId`, read from `credentials.json` (`jq -r .private_key_id` for GCP, `jq -r .keyId` for Azure; it is not secret). Keep the plaintext and the pending record until step 6 has committed everything: until then they mark the migration as unfinished, so an interrupted run is recovered (finishing steps 3 and 4) rather than read as a missing credential.
 5. Replace `.claude/hooks/cloud-auth.sh` with the multi-provider hook below.
-6. Verify each provider's credentials with its smoke test, then commit all changes together.
+6. Verify each provider's credentials with its smoke test, then commit all changes together (the rename, the new `.enc`, the config and the hook). Only after that commit, delete the plaintext and the pending record: `rm -f credentials.json .cloud-setup-pending.json`.
 
 Other team members then add the new provider for themselves through Add Team Member, one provider at a time.
 
@@ -96,7 +96,18 @@ clear_prior_gcp() {
     echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
   fi
 }
-trap 'rm -f /tmp/credentials.json; [ "${GCP_CONFIGURED:-}" != 1 ] || [ "${GCP_OK:-}" = 1 ] || clear_prior_gcp' EXIT
+# Likewise for AWS (the persisted key exports) and Azure (az's cached login)
+clear_prior_aws() {
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+  fi
+}
+clear_prior_az() { command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true; }
+trap 'rm -f /tmp/credentials.json
+      [ "${GCP_CONFIGURED:-}" != 1 ] || [ "${GCP_OK:-}" = 1 ] || clear_prior_gcp
+      [ "${AWS_CONFIGURED:-}" != 1 ] || [ "${AWS_OK:-}" = 1 ] || clear_prior_aws
+      [ "${AZ_CONFIGURED:-}" != 1 ] || [ "${AZ_OK:-}" = 1 ] || clear_prior_az' EXIT
 
 # Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
 # the activated service account. Clear it for the session whenever GCP may be
@@ -126,11 +137,15 @@ expected_iam_user() {   # $1 = email, $2 = user prefix
 }
 
 CONFIG=".cloud-config.json"
-if [ ! -f "$CONFIG" ]; then clear_gcp_token; exit 0; fi
+# A missing or unreadable config fails closed for every provider
+all_configured() { AWS_CONFIGURED=1; AZ_CONFIGURED=1; clear_gcp_token; }
+if [ ! -f "$CONFIG" ]; then all_configured; exit 0; fi
 
-PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || { clear_gcp_token; exit 0; }
-if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then clear_gcp_token; exit 0; fi
+PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || { all_configured; exit 0; }
+if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then all_configured; exit 0; fi
 if jq -e 'any(.providers[]; .provider == "gcp")' "$CONFIG" >/dev/null 2>&1; then clear_gcp_token; fi
+jq -e 'any(.providers[]; .provider == "aws")' "$CONFIG" >/dev/null 2>&1 && AWS_CONFIGURED=1
+jq -e 'any(.providers[]; .provider == "azure")' "$CONFIG" >/dev/null 2>&1 && AZ_CONFIGURED=1
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 if [ -z "$USER_EMAIL" ]; then exit 0; fi
@@ -252,6 +267,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         rm -f /tmp/credentials.json; continue
       fi
       if [ -n "$CLAUDE_ENV_FILE" ]; then
+        sed -i '/^unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
         echo "export AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID'" >> "$CLAUDE_ENV_FILE"
         echo "export AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY'" >> "$CLAUDE_ENV_FILE"
         echo "unset AWS_SESSION_TOKEN AWS_PROFILE" >> "$CLAUDE_ENV_FILE"
@@ -301,6 +317,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   esac
 
   rm -f /tmp/credentials.json
+  case "$PROVIDER" in gcp) GCP_OK=1 ;; aws) AWS_OK=1 ;; azure) AZ_OK=1 ;; esac
   echo "$PROVIDER credentials activated for $USER_EMAIL"
 done
 ```

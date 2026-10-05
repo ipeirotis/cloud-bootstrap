@@ -53,8 +53,12 @@ Using the bootstrap token and provider-specific commands:
    # provider-side credential is live but unusable: revoke it (for AWS, with the
    # member's new IAM user) and delete the plaintext. If revocation fails, the
    # script records the ID under "unrevoked" in .cloud-config.json; commit that.
+   ENC_EXISTED=""; [ -e "$ENC_FILE" ] && ENC_EXISTED=1
    discard_new() {
      rm -f "${TMP_ENC:-}"
+     # A signal right after the rename must not leave a credential file for a
+     # key this handler is about to revoke (the next session would try it)
+     [ -n "$ENC_EXISTED" ] || rm -f "$ENC_FILE"
      echo "ERROR: encryption did not complete; revoking the new $PROVIDER credential."
      TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
          bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
@@ -77,12 +81,12 @@ Using the bootstrap token and provider-specific commands:
    ```
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves. (Azure's "Add Client Secret" snippet records the secret's `keyId` there itself.) Run it before the next step: it reads the ID from `credentials.json` (or, failing that, from the encrypted file).
-5. **Delete the plaintext credentials now** (only after step 4: until then its presence is what marks the onboarding as unfinished for the next session, see "Recovering an Interrupted Run" in SKILL.md):
+5. Commit the new encrypted credentials file and `.cloud-config.json` (it now holds this member's `key_ids` entry for GCP or Azure, and any `unrevoked` record).
+6. **Only after that commit, delete the plaintext** (until then its presence is what marks the onboarding as unfinished for the next session, see "Recovering an Interrupted Run" in SKILL.md):
    ```bash
    rm -f credentials.json .cloud-setup-pending.json
    ```
    (`.cloud-setup-pending.json` exists only for AWS, where the snippet records the new member's IAM user before creating it.)
-6. Commit the new encrypted credentials file (and, for GCP, `.cloud-config.json`).
 
 ## Step 4: Ensure SessionStart Hook Exists
 

@@ -204,8 +204,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    if [ -z "${OLD_KEY_ID:-}" ] && [ -z "$(pcfg '.rotating[$e]')" ] \
       && { [ -n "$(pcfg '(.revoke_pending[$e] // []) | if type == "string" then . else .[] end')" ] \
            || { [ "$PROVIDER" != aws ] && [ "$(pcfg '.key_ids[$e]')" = "$NEW_KEY_ID" ]; }; }; then
-     rm -f credentials.json
-     echo "The swap is already recorded; commit $ENC_FILE and .cloud-config.json, then continue with step 9."
+     echo "The swap is already recorded; commit $ENC_FILE and .cloud-config.json, then delete credentials.json and continue with step 9."
      exit 0
    fi
    OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.rotating[$e]')}"
@@ -226,10 +225,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      if .providers then .providers |= map(if .provider == $p then upd else . end) else upd end' \
      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
      || { echo "ERROR: could not update .cloud-config.json; credentials.json is kept, re-run this step."; exit 1; }
-   # Everything is recorded: the plaintext can go
-   rm -f credentials.json
    ```
-   Commit the updated encrypted credentials file together with `.cloud-config.json`.
+   Commit the updated encrypted credentials file together with `.cloud-config.json`, and only then delete the plaintext (`rm -f credentials.json`): until the commit, it is what lets an interrupted run be finished.
 9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list, plus `OLD_KEY_ID` if this shell has it, and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
    ```bash
    USER_EMAIL=$(git config user.email)

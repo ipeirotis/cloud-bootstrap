@@ -67,7 +67,7 @@ Using the bootstrap token and provider-specific commands from the reference file
    ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    # Encrypt to a private temp file, prove it decrypts to the credential, and
    # only then move it into place in one rename, so a truncated file never
-   # appears under the final name. credentials.json stays until step 7: if this
+   # appears under the final name. credentials.json stays until step 8 (after the commit): if this
    # run is interrupted anywhere before then, the next session finds it and
    # recovers ("Recovering an Interrupted Run" in SKILL.md).
    TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX") \
@@ -100,11 +100,11 @@ Using the bootstrap token and provider-specific commands from the reference file
    EOF
    ```
    For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
-7. **Delete the plaintext credentials now** (only now: until this point its presence is what marks the setup as unfinished for the next session):
+7. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update (step 1a).
+8. **Only after that commit, delete the plaintext and the setup record** (until then they mark the setup as unfinished for the next session):
    ```bash
    rm -f credentials.json .cloud-setup-pending.json
    ```
-8. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update (step 1a).
 
 ## Step 6: Set Up SessionStart Hook
 
