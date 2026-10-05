@@ -48,10 +48,10 @@ Tell them what permissions their personal account needs to create service accoun
 
 Using the bootstrap token and provider-specific commands from the reference file:
 
-1. Create the service account/identity.
-2. Grant ONLY the approved roles.
-3. Generate credentials (key file or access key pair).
-4. Resolve the encryption key using the logic in SKILL.md.
+1. **Resolve the encryption key first**, using the logic in SKILL.md, before anything is created on the provider side. If no key is set, stop here (SKILL.md, Example 3): otherwise setup would leave a live provider credential and a plaintext `credentials.json` that cannot be encrypted.
+2. Create the service account/identity.
+3. Grant ONLY the approved roles.
+4. Generate credentials (key file or access key pair).
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
@@ -79,10 +79,10 @@ Using the bootstrap token and provider-specific commands from the reference file
    ```
 8. Add to `.gitignore`:
    ```
-   # Cloud -- never commit plaintext credentials
-   credentials.json
-   credentials_clean.json
-   /tmp/
+   # Cloud -- never commit plaintext credentials (written at the repo root
+   # during setup; the hooks' decrypted copies live in the system /tmp)
+   /credentials.json
+   /credentials_clean.json
    ```
 9. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update.
 

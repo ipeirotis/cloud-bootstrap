@@ -367,9 +367,11 @@ for KEY_ID in $(aws iam list-access-keys --user-name "claude-agent-${SANITIZED_E
   aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id "$KEY_ID"
 done
 
-# Remove from group and delete user
+# Remove from the configured group (stored as service_account, provider-aware),
+# not a hard-coded name: delete-user fails while any group membership remains.
+GROUP_NAME=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .service_account) else .service_account end) // "claude-agents"' .cloud-config.json 2>/dev/null)
 aws iam remove-user-from-group \
-  --group-name claude-agents \
+  --group-name "$GROUP_NAME" \
   --user-name "claude-agent-${SANITIZED_EMAIL}"
 aws iam delete-user --user-name "claude-agent-${SANITIZED_EMAIL}"
 ```

@@ -41,11 +41,14 @@ For example: `.cloud-credentials.gcp.alice@example.com.enc` and `.cloud-credenti
 
 If `.cloud-config.json` has a top-level `provider` field (single-provider format), treat it as-is — no migration needed until a second provider is added. When adding a second provider:
 
-1. Read the existing single-provider config.
-2. Rewrite `.cloud-config.json` to the `providers` array format.
-3. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc`.
-4. Update `.claude/hooks/cloud-auth.sh` to iterate over all providers.
-5. Commit all changes.
+1. Read the existing single-provider config and the new provider's reference file.
+2. **Provision the new provider** exactly as First-Time Setup does for it: resolve that provider's encryption key first (stop if missing), propose roles and get the user's approval, get its bootstrap token, create the identity, grant only the approved roles, generate its credentials, and encrypt them to `.cloud-credentials.<new-provider>.<email>.enc`. Delete the plaintext immediately.
+3. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one (each with its own `roles` and `created_at`).
+4. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc`.
+5. Replace `.claude/hooks/cloud-auth.sh` with the multi-provider hook below.
+6. Verify each provider's credentials with its smoke test, then commit all changes together.
+
+Other team members then add the new provider for themselves through Add Team Member, one provider at a time.
 
 ## Authentication
 
@@ -68,6 +71,11 @@ set -e
 # Claude Code on the Web only (each session is its own container); see the
 # single-provider hook in references/gcp.md for why it skips local machines.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
+
+# The loop decrypts each provider's key to /tmp/credentials.json and may then
+# spend minutes installing a CLI; remove the plaintext however the hook ends
+# (timeout, interruption, a failing command). The GCP ADC copy is separate.
+trap 'rm -f /tmp/credentials.json' EXIT
 
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi

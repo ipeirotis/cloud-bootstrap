@@ -30,10 +30,11 @@ Tell them the specific permission needed from the provider reference file (see "
 
 Using the bootstrap token and provider-specific commands:
 
+0. **Resolve the encryption key for the current user first** (SKILL.md), before creating anything on the provider side. If it is missing, stop and ask the user to set it; never create a key you cannot encrypt.
 1. Create the new member's credential:
    - **GCP / Azure:** create a **new key** (GCP) or client secret (Azure) for the **existing** service account or app (do NOT create a new one). See the "Add Key for Existing Service Account" / "Add Client Secret" section in the provider reference.
    - **AWS:** the configured `service_account` is the shared IAM **group**, and access keys belong to users, not groups. Create a **new IAM user for this member in the existing group**, then its access key, following "Add Team Member: Create New User in Existing Group" in `references/aws.md`.
-2. Resolve the encryption key for the current user.
+2. Use the encryption key resolved in step 0.
 3. Encrypt with the user's email in the filename. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)

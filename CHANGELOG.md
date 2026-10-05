@@ -24,7 +24,11 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP: key creation fails on HTTP errors and validates the key before encrypting; the smoke test mints a token instead of `gcloud projects describe` (which needs the Cloud Resource Manager API); first-time prerequisites include Service Account Key Admin, which holds `iam.serviceAccountKeys.create`.
 - All standalone and multi-provider hooks run the per-file 180-day age check; the multi-provider fallback reads each provider's own `created_at`.
 - Snippets stop on the first failed mutation: AWS `create-user` (a taken name would hand the member another member's identity), GCP `getIamPolicy`/`setIamPolicy`, and the Azure name-collision lookups (a failed lookup is not "no collision").
-- First-time setup writes the Cloud Credentials section to `CLAUDE.md` or `AGENTS.md`, whichever the repo uses; uninstall removes it from either.
+- First-time setup writes the Cloud Credentials section to `CLAUDE.md` or `AGENTS.md`, whichever the repo uses; uninstall removes it from either, and permission escalation updates it there.
+- Setup, Add Team Member, and rotation resolve the encryption passphrase before any provider-side change, so a missing passphrase never leaves a live, unencryptable key.
+- Adding a second provider now provisions it (approved roles, bootstrap token, identity, encrypted key) before migrating the config and hook.
+- The multi-provider hook removes the shared plaintext `/tmp/credentials.json` on any exit; AWS member removal uses the configured group.
+- Setup's `.gitignore` entries are anchored to the repo root (`/credentials.json`, `/credentials_clean.json`); the repo-relative `/tmp/` entry, which never covered the system `/tmp`, is gone.
 
 ## [1.4.0] - 2026-04-10
 

@@ -3,7 +3,7 @@
 Use this when credentials need to be replaced (e.g., age warning, suspected compromise, policy requirement). This replaces the current user's encrypted key without affecting other team members.
 
 1. Read `.cloud-config.json` to determine the provider. Read the provider reference file.
-2. Ask the user for a bootstrap token (same as during setup).
+2. **Resolve the encryption key** (SKILL.md) and stop if it is missing, before anything changes on the provider side; then ask the user for a bootstrap token (same as during setup).
 
 > **Order matters: create and verify the replacement BEFORE revoking the old key.**
 > For routine rotations, never delete the current provider-side key first. If the
