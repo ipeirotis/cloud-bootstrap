@@ -625,7 +625,7 @@ Google client libraries (which use Application Default Credentials, not the
 gcloud CLI auth store) can authenticate too:
 
 ```bash
-# Decrypt directly to the session ADC path so this snippet is self-contained
+# Decrypt to the session ADC path here so this snippet is self-contained
 # (don't assume SessionStart already left a file behind). KEY/ENC_FILE come
 # from the Authenticate workflow.
 ADC_KEY="/tmp/gcp-adc-credentials.json"   # decrypted here, never committed
@@ -636,28 +636,44 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
+# On any failure, leave no repository identity active, as the hook does:
+# gcloud keeps an earlier account cached until it is revoked, so note it
+# before the new key replaces the file that names it
+PRIOR_SA=$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null || true)
+gcp_fail() {
+  local A
+  for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)"; do
+    [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
+  done
+  rm -f "$ADC_KEY" "$ADC_KEY.new"
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
+    echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
+  fi
+  echo "ERROR: $1; any earlier activation was logged out."; exit 1
+}
 (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY") \
-  || { rm -f "$ADC_KEY"; echo "ERROR: could not decrypt $ENC_FILE."; exit 1; }
+  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY.new") \
+  || gcp_fail "could not decrypt $ENC_FILE"
 SA_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
-[ -n "$SA_CFG" ] && [ "$(jq -r '.client_email // empty' "$ADC_KEY")" = "$SA_CFG" ] \
-  || { rm -f "$ADC_KEY"; echo "ERROR: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}."; exit 1; }
+[ -n "$SA_CFG" ] && [ "$(jq -r '.client_email // empty' "$ADC_KEY.new")" = "$SA_CFG" ] \
+  || gcp_fail "$ENC_FILE is not a key for ${SA_CFG:-the configured service account}"
+mv -f "$ADC_KEY.new" "$ADC_KEY"
 gcloud auth activate-service-account --key-file="$ADC_KEY" \
-  || { rm -f "$ADC_KEY"; echo "ERROR: gcloud could not activate the key."; exit 1; }
+  || gcp_fail "gcloud could not activate the key (it may be revoked)"
 # Provider-aware project: in multi-provider repos project_id is in providers[].
 # Stop (and log out) unless exactly the configured project is selected, as the
 # hook does: a previously selected project must not stay the default.
 PROJECT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
 if [ -z "$PROJECT_ID" ] || ! gcloud config set project "$PROJECT_ID" 2>/dev/null \
    || [ "$(gcloud config get-value project 2>/dev/null)" != "$PROJECT_ID" ]; then
-  echo "ERROR: could not select GCP project '$PROJECT_ID'; logging out."
-  gcloud auth revoke "$(jq -r .client_email "$ADC_KEY")" 2>/dev/null || true
-  rm -f "$ADC_KEY"; exit 1
+  gcp_fail "could not select GCP project '$PROJECT_ID'"
 fi
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
 # Persist for the rest of the session: snippets run in short-lived shells, and
 # Python clients in later commands need GOOGLE_APPLICATION_CREDENTIALS too
 if [ -n "$CLAUDE_ENV_FILE" ]; then
+  sed -i '/^unset GOOGLE_APPLICATION_CREDENTIALS$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
   grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
 fi

@@ -67,9 +67,9 @@ Using the bootstrap token and provider-specific commands from the reference file
    ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    # Encrypt to a private temp file, prove it decrypts to the credential, and
    # only then move it into place in one rename, so a truncated file never
-   # appears under the final name. credentials.json stays until step 8 (after the commit): if this
-   # run is interrupted anywhere before then, the next session finds it and
-   # recovers ("Recovering an Interrupted Run" in SKILL.md).
+   # appears under the final name. credentials.json stays until Step 6 is
+   # committed: if this run is interrupted anywhere before then, the next
+   # session finds it and recovers ("Recovering an Interrupted Run" in SKILL.md).
    TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX") \
      || { echo "ERROR: could not create a temp file. Run the provider's setup rollback now (step 2)."; exit 1; }
    if ! { printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
@@ -101,10 +101,7 @@ Using the bootstrap token and provider-specific commands from the reference file
    ```
    For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
 7. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update (step 1a).
-8. **Only after that commit, delete the plaintext and the setup record** (until then they mark the setup as unfinished for the next session):
-   ```bash
-   rm -f credentials.json .cloud-setup-pending.json
-   ```
+8. **Keep `credentials.json` and `.cloud-setup-pending.json` for now.** They mark the setup as unfinished until the SessionStart hook is committed (Step 6): a checkout with the config and `.enc` but no hook would otherwise look complete, and nothing would add the hook.
 
 ## Step 6: Set Up SessionStart Hook
 
@@ -113,7 +110,11 @@ Create a SessionStart hook that automatically installs the provider CLI **and** 
 1. Create `.claude/hooks/cloud-auth.sh` with the script from the provider reference. Make it executable: `chmod +x .claude/hooks/cloud-auth.sh`
 2. If `.claude/settings.json` does not exist, create it with the hook configuration from the reference.
 3. If `.claude/settings.json` already exists, merge the new `SessionStart` hook into the existing `hooks` object. Do not overwrite existing hooks.
-4. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` along with the other files.
+4. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
+5. **Only after that commit, delete the plaintext and the setup record:**
+   ```bash
+   rm -f credentials.json .cloud-setup-pending.json
+   ```
 
 This ensures that future sessions start with the CLI installed and credentials already activated — no manual authentication needed.
 

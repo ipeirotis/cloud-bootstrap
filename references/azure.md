@@ -717,12 +717,15 @@ After decrypting credentials to `/tmp/credentials.json`:
 ```bash
 # Only a credential for the configured application (not a stale or copied one)
 APP_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json)
+# On any failure, log out: az keeps an earlier cached login, and later
+# commands would otherwise run as it although this activation failed
 [ -n "$APP_CFG" ] && [ "$(jq -r '.appId // empty' /tmp/credentials.json)" = "$APP_CFG" ] \
-  || { rm -f /tmp/credentials.json; echo "ERROR: the credential is not for application ${APP_CFG:-configured in .cloud-config.json}."; exit 1; }
+  || { az logout >/dev/null 2>&1; rm -f /tmp/credentials.json; echo "ERROR: the credential is not for application ${APP_CFG:-configured in .cloud-config.json}; logged out."; exit 1; }
 az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \
-  --tenant "$(jq -r .tenant /tmp/credentials.json)"
+  --tenant "$(jq -r .tenant /tmp/credentials.json)" \
+  || { az logout >/dev/null 2>&1; rm -f /tmp/credentials.json; echo "ERROR: az login failed (the secret may be revoked or expired); logged out."; exit 1; }
 
 # Provider-aware subscription: in multi-provider repos the subscription id is in
 # the matching providers[] entry, not at top-level .project_id.

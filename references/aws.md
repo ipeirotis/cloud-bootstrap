@@ -348,8 +348,7 @@ fi
 
 # Record the user before creating it, so an interruption right after
 # create-user is still recovered. Only a name confirmed absent is recorded,
-# and the record drops it again if create-user fails, so a pre-existing user
-# of that name is never one the rollback deletes.
+# so a pre-existing user of that name is never one the rollback deletes.
 if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
   echo "ERROR: IAM user $IAM_USER already exists (or the lookup failed); rolling back."
   rollback_aws_setup; exit 1
@@ -357,8 +356,15 @@ fi
 pending "$IAM_USER" || { echo "ERROR: could not update .cloud-setup-pending.json; rolling back."; rollback_aws_setup; exit 1; }
 # Create the user and add to group; on any failure, roll back and stop
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  pending ""
-  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); rolling back."
+  # A lost response can hide a user that was created (the name was free just
+  # before): drop it from the record only when AWS confirms it is absent,
+  # otherwise roll it back with the group and keep it recorded
+  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+    CREATED_USER=1
+  else
+    pending ""
+  fi
+  echo "ERROR: could not create IAM user $IAM_USER; rolling back."
   rollback_aws_setup; exit 1
 fi
 CREATED_USER=1
@@ -622,6 +628,11 @@ WANT_USER=$(iam_user_name "$(git config user.email)" "$PREFIX")
 read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
 if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+  # Drop keys an earlier activation persisted too, or later shells restore them
+  if [ -n "$CLAUDE_ENV_FILE" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+  fi
   echo "ERROR: these keys are for ${CALLER_ARN:-an unknown identity}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activated."
   exit 1
 fi
