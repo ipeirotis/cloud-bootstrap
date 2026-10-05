@@ -19,7 +19,8 @@ When a second provider is added, convert `.cloud-config.json` from a single-prov
     {
       "provider": "aws",
       "project_id": "123456789012",
-      "service_account": "claude-agents",
+      "service_account": "claude-agents-my-repo",
+      "iam_user_prefix": "claude-agent-my-repo",
       "roles": ["AmazonS3FullAccess"],
       "created_at": "2025-03-16T14:00:00Z"
     }

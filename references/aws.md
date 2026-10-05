@@ -16,8 +16,10 @@ The user's AWS account needs:
 ## Multi-User Strategy
 
 AWS allows only **2 access keys per IAM user**, which is too few for team sharing. Instead, this skill creates:
-- An **IAM group** (`claude-agents`) with the shared policies attached
-- A **separate IAM user per team member** (`claude-agent-<sanitized-email>`) added to that group
+- An **IAM group** (`claude-agents-<repo>`) with the shared policies attached
+- A **separate IAM user per team member** (`claude-agent-<repo>-<sanitized-email>`) added to that group
+
+Both names include the repository, because IAM group and user names must be unique within an AWS account: two repositories bootstrapped in one account must neither collide nor share a group (which would mix their policies). See "IAM Names" below.
 
 Each team member gets their own IAM user and access key, but all users inherit the same permissions from the group. The `.cloud-config.json` `service_account` field stores the group name.
 
@@ -185,6 +187,10 @@ This returns `AccessKeyId`, `SecretAccessKey`, and `SessionToken` as JSON (AWS C
 
 Use the AWS CLI (`aws`) if available in the environment. Otherwise, use signed API calls with the temporary credentials.
 
+## IAM Names
+
+First-Time Setup derives the group name and the user-name prefix from the repository and records them in `.cloud-config.json`: `service_account` holds the group, `iam_user_prefix` the user prefix. Every later workflow reads them back, so all members of one repo share one group and no two repos collide. Configs written before 1.5.0 have no `iam_user_prefix`; for them the snippets fall back to the old names (`claude-agents`, `claude-agent-<email>`), so existing users keep working. The user name is the prefix plus the sanitized email, capped at IAM's 64 characters with a hash suffix so distinct emails stay distinct.
+
 ## First-Time Setup: Create Group and First User
 
 ```bash
@@ -193,30 +199,37 @@ export AWS_ACCESS_KEY_ID="..."
 export AWS_SECRET_ACCESS_KEY="..."
 export AWS_SESSION_TOKEN="..."
 
-# Sanitize email for use as IAM user name (replace @ and . with -)
+# Repo-scoped IAM names (see "IAM Names" above)
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
+  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  printf '%s' "$n"
+}
+
 USER_EMAIL=$(git config user.email)
-SANITIZED_EMAIL=$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
-# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
-# long names with a hash suffix so distinct emails stay distinct.
-if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
-  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)"
-fi
+REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-24)
+GROUP_NAME="claude-agents-${REPO_SLUG}"
+USER_PREFIX="claude-agent-${REPO_SLUG}"
+IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
 
-# Create the shared group
-aws iam create-group --group-name claude-agents
-
-# Create the user and add to group; stop at the first failure
-if ! aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"; then
-  echo "ERROR: could not create IAM user claude-agent-${SANITIZED_EMAIL} (it may already exist); stop and resolve with the user."
+# Create this repo's group; an existing group of that name belongs to another
+# setup, so stop rather than share it
+if ! aws iam create-group --group-name "$GROUP_NAME"; then
+  echo "ERROR: could not create IAM group $GROUP_NAME (it may already exist); choose another name with the user."
   exit 1
 fi
-aws iam add-user-to-group \
-  --group-name claude-agents \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" || exit 1
+
+# Create the user and add to group; stop at the first failure
+if ! aws iam create-user --user-name "$IAM_USER"; then
+  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
+  exit 1
+fi
+aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" || exit 1
 
 # Create access key
-(umask 077 && aws iam create-access-key \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json) || { rm -f credentials.json; exit 1; }
+(umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json) \
+  || { rm -f credentials.json; exit 1; }
 ```
 
 Reformat `credentials.json` to a clean structure before encrypting:
@@ -232,38 +245,38 @@ mv credentials_clean.json credentials.json
 
 **Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
 
-**For `.cloud-config.json`:** set `service_account` to `claude-agents` (the group name).
+**For `.cloud-config.json`:** set `service_account` to `$GROUP_NAME` (the group) and add `"iam_user_prefix": "$USER_PREFIX"`, so later workflows derive the same names.
 
 ## Add Team Member: Create New User in Existing Group
 
 ```bash
-USER_EMAIL=$(git config user.email)
-SANITIZED_EMAIL=$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
-# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
-# long names with a hash suffix so distinct emails stay distinct.
-if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
-  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)"
-fi
+# Repo-scoped IAM names (see "IAM Names" above)
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
+  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  printf '%s' "$n"
+}
 
-# Use the configured group (stored in service_account at setup; provider-aware
-# in multi-provider mode), not a hard-coded name, or the new user won't inherit
-# the repo's permissions.
-GROUP_NAME=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .service_account) else .service_account end) // "claude-agents"' .cloud-config.json 2>/dev/null)
+USER_EMAIL=$(git config user.email)
+# The group and user prefix this repo recorded at setup (provider-aware), not
+# hard-coded names, or the new user won't inherit the repo's permissions.
+GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
+USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
+IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
 
 # Create user and add to the existing group. Stop unless create-user succeeds:
 # EntityAlreadyExists (409) means another member's email normalized to the same
 # name, and continuing would hand this member that member's identity.
-if ! aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"; then
-  echo "ERROR: could not create IAM user claude-agent-${SANITIZED_EMAIL} (it may already exist); stop and resolve with the user."
+if ! aws iam create-user --user-name "$IAM_USER"; then
+  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
   exit 1
 fi
-aws iam add-user-to-group \
-  --group-name "$GROUP_NAME" \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" || exit 1
+aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" || exit 1
 
 # Create access key
-(umask 077 && aws iam create-access-key \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json) || { rm -f credentials.json; exit 1; }
+(umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json) \
+  || { rm -f credentials.json; exit 1; }
 
 # Reformat — read region from existing config. In multi-provider mode the
 # region lives inside the matching providers[] entry, not at the top level.
@@ -278,13 +291,13 @@ mv credentials_clean.json credentials.json
 
 ## Grant Roles (Attach Policies to Group)
 
-Policies are attached to the **group**, not individual users. This way all team members share the same permissions.
+Policies are attached to the **group**, not individual users. This way all team members share the same permissions. Use this repo's group: `$GROUP_NAME` from First-Time Setup, or `GROUP_NAME=$(aws_cfg service_account)` in a later session.
 
 For AWS managed policies:
 
 ```bash
 aws iam attach-group-policy \
-  --group-name claude-agents \
+  --group-name "$GROUP_NAME" \
   --policy-arn arn:aws:iam::aws:policy/POLICY_NAME
 ```
 
@@ -292,7 +305,7 @@ For inline policies (more granular):
 
 ```bash
 aws iam put-group-policy \
-  --group-name claude-agents \
+  --group-name "$GROUP_NAME" \
   --policy-name descriptive-name \
   --policy-document '{
     "Version": "2012-10-17",
@@ -349,31 +362,34 @@ If this fails, the credentials may be expired or revoked. Re-run the **Authentic
 List users in the group:
 
 ```bash
-aws iam get-group --group-name claude-agents
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
+aws iam get-group --group-name "$GROUP_NAME"
 ```
 
 Remove a team member (if they leave):
 
 ```bash
-SANITIZED_EMAIL=$(printf '%s' "departed-user@example.com" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
-# IAM user names are at most 64 characters; "claude-agent-" uses 13. Truncate
-# long names with a hash suffix so distinct emails stay distinct.
-if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
-  SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "departed-user@example.com" | sha256sum | cut -c1-8)"
-fi
+# Repo-scoped IAM names (see "IAM Names" above)
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
+  local n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  [ ${#n} -le 64 ] || n="${n:0:55}-$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  printf '%s' "$n"
+}
+GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
+USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
+IAM_USER=$(iam_user_name "departed-user@example.com" "$USER_PREFIX")
 
 # Delete their access keys
-for KEY_ID in $(aws iam list-access-keys --user-name "claude-agent-${SANITIZED_EMAIL}" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
-  aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id "$KEY_ID"
+for KEY_ID in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID"
 done
 
-# Remove from the configured group (stored as service_account, provider-aware),
-# not a hard-coded name: delete-user fails while any group membership remains.
-GROUP_NAME=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .service_account) else .service_account end) // "claude-agents"' .cloud-config.json 2>/dev/null)
-aws iam remove-user-from-group \
-  --group-name "$GROUP_NAME" \
-  --user-name "claude-agent-${SANITIZED_EMAIL}"
-aws iam delete-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+# Remove from the configured group, then delete: delete-user fails while any
+# group membership remains.
+aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER"
+aws iam delete-user --user-name "$IAM_USER"
 ```
 
 Also remove the corresponding `.cloud-credentials.<email>.enc` file from the repo.

@@ -22,7 +22,7 @@ To completely remove cloud-bootstrap from a repo:
 4. **Remove the SessionStart hook:**
    - Delete `.claude/hooks/cloud-auth.sh`
    - Remove the `SessionStart` entry from `.claude/settings.json` (or delete the file if the hook was the only content)
-5. **Clean up `.gitignore`:** Remove the `credentials.json` and `/tmp/credentials.json` lines.
+5. **Clean up `.gitignore`:** Remove the rules setup added: the `# Cloud -- never commit plaintext credentials` comment, `/credentials.json`, and `/credentials_clean.json`. Older setups wrote `credentials.json`, `credentials_clean.json`, and `/tmp/` instead; remove those if present.
 6. **Remove the `## Cloud Credentials` section from the repo's agent-instructions file(s)** — `CLAUDE.md`, `AGENTS.md`, or both; check each (`grep -n '^## Cloud Credentials' CLAUDE.md AGENTS.md`) and delete that section, up to the next `## ` heading, wherever it appears.
 7. **Commit all changes.**
 

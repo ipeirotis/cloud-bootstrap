@@ -173,8 +173,12 @@ All API calls use `curl -H "Authorization: Bearer $TOKEN"` against `https://` en
 ## Create Service Account
 
 ```bash
-# Create the service account
-curl -X POST \
+# Create the service account. Stop on any HTTP error: a 409 means a
+# `claude-agent` account already exists in this project, and granting roles to
+# or creating keys for that pre-existing account would hand out an identity this
+# setup did not create. Agree a different accountId with the user instead.
+RESP=$(mktemp)
+if ! curl -sS --fail -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -183,7 +187,13 @@ curl -X POST \
     "serviceAccount": {
       "displayName": "Claude Code Agent"
     }
-  }'
+  }' > "$RESP"; then
+  rm -f "$RESP"
+  echo "ERROR: service account creation failed (409 = it already exists); choose another accountId with the user."
+  exit 1
+fi
+SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
+[ -n "$SA_EMAIL" ] || { echo "ERROR: creation response has no service-account email."; exit 1; }
 ```
 
 The service account email will be: `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`

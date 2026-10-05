@@ -23,12 +23,11 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
    - **AWS caveat:** the add-team-member snippet calls `aws iam create-user` first, but during rotation the user already exists, so that call errors. For an AWS rotation, **skip `create-user`/`add-user-to-group`** and only create a new access key for the existing user:
      ```bash
-     SANITIZED_EMAIL=$(printf '%s' "$(git config user.email)" | sed 's/[^A-Za-z0-9+=,_-]/-/g')
-     # Same normalization as references/aws.md (64-char IAM limit, hash suffix)
-     if [ ${#SANITIZED_EMAIL} -gt 51 ]; then
-       SANITIZED_EMAIL="${SANITIZED_EMAIL:0:42}-$(printf '%s' "$(git config user.email)" | sha256sum | cut -c1-8)"
-     fi
-     aws iam create-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
+     # Same repo-scoped name as references/aws.md ("IAM Names"): define its
+     # aws_cfg and iam_user_name helpers first
+     USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
+     IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
+     (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json)
      # then reformat (access_key_id/secret_access_key/region) as in aws.md
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
@@ -46,7 +45,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
        AWS_ACCESS_KEY_ID="$(jq -r .access_key_id credentials.json)" \
        AWS_SECRET_ACCESS_KEY="$(jq -r .secret_access_key credentials.json)" \
-       aws sts get-caller-identity --query Arn --output text   # must be claude-agent-${SANITIZED_EMAIL}
+       aws sts get-caller-identity --query Arn --output text   # must end in user/$IAM_USER
      ```
    - **Azure:**
      ```bash
@@ -93,5 +92,5 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 8. Commit the updated encrypted credentials file.
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
    - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's *previous* key, delete it.
-   - **AWS:** Delete the old access key: `aws iam delete-access-key --user-name "claude-agent-${SANITIZED_EMAIL}" --access-key-id OLD_KEY_ID`
+   - **AWS:** Delete the old access key: `aws iam delete-access-key --user-name "$IAM_USER" --access-key-id OLD_KEY_ID`
    - **Azure:** Remove the *previous* client secret (see "Secret Management" in azure.md).

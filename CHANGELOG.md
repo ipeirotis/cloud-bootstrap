@@ -16,6 +16,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Azure service-principal names are repo-specific and collision-checked against both applications and service principals.
 - SKILL.md rules: IAM changes happen only inside approved setup steps, with user-approved roles and a user-supplied bootstrap token; pasted bootstrap tokens are the designed handoff and are never stored or echoed.
 
+### Changed
+- AWS IAM names are scoped to the repository (`claude-agents-<repo>`, `claude-agent-<repo>-<email>`), since IAM names are unique per account: two repos in one account no longer collide or share a group. Setup records the group (`service_account`) and the new `iam_user_prefix` in `.cloud-config.json`; every workflow derives names through one `iam_user_name` helper. Configs without `iam_user_prefix` keep the pre-1.5 names, unchanged.
+
 ### Fixed
 - `install.sh` / `update.sh`: download every file with `curl --fail` into a temp dir and install only if all succeed; commit only the skill directory; skip the commit when nothing changed. `update.sh` reads its confirmation from the terminal (stdin is the script under `curl | bash`) and, with no terminal, requires `--yes`.
 - New `MANIFEST` lists the distributed files; both scripts read it from the release they install, so new files are picked up.
@@ -28,6 +31,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Setup, Add Team Member, and rotation resolve the encryption passphrase before any provider-side change, so a missing passphrase never leaves a live, unencryptable key.
 - Adding a second provider now provisions it (approved roles, bootstrap token, identity, encrypted key) before migrating the config and hook.
 - The multi-provider hook removes the shared plaintext `/tmp/credentials.json` on any exit; AWS member removal uses the configured group.
+- GCP service-account creation fails on any HTTP error (409 = the account already exists) instead of continuing to grant roles and create keys for a pre-existing account.
+- Uninstall removes the `.gitignore` rules setup actually adds (`/credentials.json`, `/credentials_clean.json`), plus the pre-1.5 forms.
 - Setup's `.gitignore` entries are anchored to the repo root (`/credentials.json`, `/credentials_clean.json`); the repo-relative `/tmp/` entry, which never covered the system `/tmp`, is gone.
 
 ## [1.4.0] - 2026-04-10
