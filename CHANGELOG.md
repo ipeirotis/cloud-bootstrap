@@ -32,6 +32,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Adding a second provider now provisions it (approved roles, bootstrap token, identity, encrypted key) before migrating the config and hook.
 - The multi-provider hook removes the shared plaintext `/tmp/credentials.json` on any exit; AWS member removal uses the configured group.
 - GCP role grants bind to the service account setup actually created (`SA_EMAIL`, or the configured one later), never a hard-coded name, and use a private `mktemp -d` work directory instead of fixed `/tmp` paths.
+- Azure service-principal names are a sanitized repo slug plus a random per-run suffix: safe inside JSON and OData strings, and concurrent setups can no longer race to the same name (which `create-for-rbac` would reuse).
 - Azure REST setup documents a "Rollback a Failed Setup" step (delete the half-created application and the local plaintext) for failures after the creation block, whose trap cannot span later snippets; first-time setup says to undo a created identity before retrying on every provider.
 - GCP service-account creation fails on any HTTP error (409 = the account already exists) instead of continuing to grant roles and create keys for a pre-existing account.
 - Uninstall removes the `.gitignore` rules setup actually adds (`/credentials.json`, `/credentials_clean.json`), plus the pre-1.5 forms.

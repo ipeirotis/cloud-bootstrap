@@ -162,8 +162,13 @@ Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with the ap
 # A fixed display name such as "claude-agent" can make create-for-rbac modify an
 # existing app with that name. Derive a repo-specific name, refuse to proceed if
 # it is already taken, and ask the user to approve a different name instead.
-REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)")
-SP_NAME="claude-agent-${REPO_SLUG}"
+# Name: a sanitized repo slug (letters, digits, '-') plus a random per-run
+# suffix. Sanitizing keeps the name safe inside JSON and OData strings; the
+# suffix makes concurrent setups pick different names, so neither can modify
+# the other's application (create-for-rbac reuses objects that share a name).
+REPO_SLUG=$(printf '%s' "$(basename "$(git rev-parse --show-toplevel)")" | tr -c 'A-Za-z0-9-' '-' | cut -c1-40)
+SP_NAME="claude-agent-${REPO_SLUG}-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+echo "Service principal name for this setup: $SP_NAME (keep it until setup finishes)"
 # create-for-rbac can modify an existing application OR service principal with
 # this display name, so both collections must be empty.
 # A failed lookup (expired login, no directory read access, API error) is not
@@ -207,9 +212,14 @@ cleanup_failed_setup() {
 }
 trap 'cleanup_failed_setup' ERR
 
-# Step 1: Create application (same repo-specific, collision-checked name as the
-# CLI path above)
-SP_NAME="claude-agent-$(basename "$(git rev-parse --show-toplevel)")"
+# Step 1: Create application (same sanitized, per-run name as the CLI path above)
+# Name: a sanitized repo slug (letters, digits, '-') plus a random per-run
+# suffix. Sanitizing keeps the name safe inside JSON and OData strings; the
+# suffix makes concurrent setups pick different names, so neither can modify
+# the other's application (create-for-rbac reuses objects that share a name).
+REPO_SLUG=$(printf '%s' "$(basename "$(git rev-parse --show-toplevel)")" | tr -c 'A-Za-z0-9-' '-' | cut -c1-40)
+SP_NAME="claude-agent-${REPO_SLUG}-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+echo "Service principal name for this setup: $SP_NAME (keep it until setup finishes)"
 EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value | length')
@@ -258,7 +268,9 @@ The trap above only covers this block: the agent may run each snippet in its own
 ```bash
 # Delete the application created above (this removes its service principal,
 # client secrets, and role assignments' principal) and the local plaintext.
-SP_NAME="${SP_NAME:-claude-agent-$(basename "$(git rev-parse --show-toplevel)")}"
+# Use the exact name or object id this setup printed: the name has a random
+# per-run suffix, so it cannot be re-derived from the repo.
+[ -n "$APP_OBJECT_ID" ] || [ -n "$SP_NAME" ] || { echo "ERROR: set APP_OBJECT_ID or SP_NAME from the failed setup's output."; exit 1; }
 if [ -z "$APP_OBJECT_ID" ]; then
   APP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
     --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
