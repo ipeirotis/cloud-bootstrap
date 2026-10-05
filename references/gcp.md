@@ -177,13 +177,14 @@ All API calls use `curl -H "Authorization: Bearer $TOKEN"` against `https://` en
 # `claude-agent` account already exists in this project, and granting roles to
 # or creating keys for that pre-existing account would hand out an identity this
 # setup did not create. Agree a different accountId with the user instead.
+SA_ID="${SA_ID:-claude-agent}"
 RESP=$(mktemp)
 if ! curl -sS --fail -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "accountId": "claude-agent",
+    "accountId": "'"$SA_ID"'",
     "serviceAccount": {
       "displayName": "Claude Code Agent"
     }
@@ -196,7 +197,7 @@ SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
 [ -n "$SA_EMAIL" ] || { echo "ERROR: creation response has no service-account email."; exit 1; }
 ```
 
-The service account email will be: `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`
+`SA_EMAIL` (normally `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`, or `$SA_ID@...` if the user chose another id) is the identity every later step binds to: grant roles to it, create its key, and record it as `service_account` in `.cloud-config.json`.
 
 ## Grant Roles
 
@@ -204,15 +205,23 @@ For each role, read the **full** current policy (version 3), add the binding, an
 
 ```bash
 ROLE="roles/ROLE_NAME"
-MEMBER="serviceAccount:claude-agent@$PROJECT_ID.iam.gserviceaccount.com"
+# Bind to the account setup actually created (SA_EMAIL from Create Service
+# Account), or in a later session the one recorded in config; never a
+# hard-coded name, which could be a different, pre-existing account.
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$SA_EMAIL" ] || { echo "ERROR: SA_EMAIL is not set; run Create Service Account first."; exit 1; }
+MEMBER="serviceAccount:$SA_EMAIL"
+
+# Private, unique scratch space (no fixed /tmp names to race on or clobber)
+WORK=$(mktemp -d)
 
 # Get the current IAM policy, including etag, version, and auditConfigs
 if ! curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:getIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"options": {"requestedPolicyVersion": 3}}' > /tmp/policy.json; then
-  rm -f /tmp/policy.json; echo "ERROR: getIamPolicy failed; role $ROLE not granted."; exit 1
+  -d '{"options": {"requestedPolicyVersion": 3}}' > "$WORK/policy.json"; then
+  rm -rf "$WORK"; echo "ERROR: getIamPolicy failed; role $ROLE not granted."; exit 1
 fi
 
 # Add the member to the unconditional binding for ROLE (or create it),
@@ -224,8 +233,8 @@ jq --arg r "$ROLE" --arg m "$MEMBER" '
     then .bindings |= map(if .role == $r and .condition == null
                           then .members = ((.members + [$m]) | unique) else . end)
     else .bindings += [{role: $r, members: [$m]}] end
-  | {policy: .}' /tmp/policy.json > /tmp/new-policy.json \
-  || { rm -f /tmp/policy.json /tmp/new-policy.json; echo "ERROR: could not build the new policy."; exit 1; }
+  | {policy: .}' "$WORK/policy.json" > "$WORK/new-policy.json" \
+  || { rm -rf "$WORK"; echo "ERROR: could not build the new policy."; exit 1; }
 
 # Write it back; a 409 (etag mismatch) means someone else changed the policy:
 # re-run both steps rather than forcing the write. Stop on any failure, so setup
@@ -234,10 +243,10 @@ if curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:setIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d @/tmp/new-policy.json; then
-  rm -f /tmp/policy.json /tmp/new-policy.json
+  -d @"$WORK/new-policy.json"; then
+  rm -rf "$WORK"
 else
-  rm -f /tmp/policy.json /tmp/new-policy.json
+  rm -rf "$WORK"
   echo "ERROR: setIamPolicy failed (409 = concurrent change: re-run from getIamPolicy); role $ROLE not granted."
   exit 1
 fi

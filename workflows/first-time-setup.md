@@ -49,7 +49,7 @@ Tell them what permissions their personal account needs to create service accoun
 Using the bootstrap token and provider-specific commands from the reference file:
 
 1. **Resolve the encryption key first**, using the logic in SKILL.md, before anything is created on the provider side. If no key is set, stop here (SKILL.md, Example 3): otherwise setup would leave a live provider credential and a plaintext `credentials.json` that cannot be encrypted.
-2. Create the service account/identity.
+2. Create the service account/identity. From here on, if any later step fails (a role grant, key creation, encryption), undo what was created before retrying, so a live identity or key is not left behind and the collision checks do not block the retry: Azure has "Rollback a Failed Setup" in its reference; for GCP delete the service account (`gcloud iam service-accounts delete "$SA_EMAIL"` or the REST `DELETE`), for AWS remove the user's keys, the user, and the group.
 3. Grant ONLY the approved roles.
 4. Generate credentials (key file or access key pair).
 5. Encrypt the credentials **with the user's email in the filename**:

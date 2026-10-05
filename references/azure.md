@@ -246,9 +246,34 @@ SECRET=$(jq -r '.secretText // empty' secret.json)
 
 trap - ERR
 rm -f app.json sp.json secret.json
+echo "Created application $SP_NAME (object id $APP_OBJECT_ID). Keep APP_OBJECT_ID until setup finishes."
 ```
 
 The tenant ID is collected first, before any Graph call creates anything, so a missing tenant never leaves a half-created application or a live secret on disk.
+
+The trap above only covers this block: the agent may run each snippet in its own shell, where a trap cannot follow. Role grants, encryption, and the commit still come after it, so **if any later setup step fails, run the rollback below before retrying**. Otherwise the application and its live client secret stay behind, possibly with some roles already granted, and the name-collision check blocks a retry with the same name.
+
+### Rollback a Failed Setup
+
+```bash
+# Delete the application created above (this removes its service principal,
+# client secrets, and role assignments' principal) and the local plaintext.
+SP_NAME="${SP_NAME:-claude-agent-$(basename "$(git rev-parse --show-toplevel)")}"
+if [ -z "$APP_OBJECT_ID" ]; then
+  APP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+    --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
+    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+fi
+if [ -n "$APP_OBJECT_ID" ]; then
+  curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+    -H "Authorization: Bearer $GRAPH_TOKEN" \
+    && echo "Deleted application $SP_NAME." \
+    || echo "WARNING: could not delete application $APP_OBJECT_ID; remove it in the portal."
+fi
+rm -f credentials.json app.json sp.json secret.json
+```
+
+With the CLI path, `az ad app delete --id "$(jq -r .appId credentials.json)"` does the same; run it before removing `credentials.json`. Role assignments left on the deleted principal no longer grant anything and can be removed with `az role assignment delete --assignee <appId>`.
 
 ## Grant Roles
 
@@ -288,7 +313,7 @@ SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] |
 SP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
   --data-urlencode "\$filter=appId eq '$APP_ID'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
-[ -n "$SP_OBJECT_ID" ] || { echo "ERROR: service principal for $APP_ID not found."; exit 1; }
+[ -n "$SP_OBJECT_ID" ] || { echo "ERROR: service principal for $APP_ID not found. During setup, run Rollback a Failed Setup."; exit 1; }
 
 # URL-encode the query: role names contain spaces (e.g. "Storage Blob Data
 # Contributor"), which curl rejects if substituted raw into the URL. Let curl
@@ -298,7 +323,7 @@ ROLE_DEFINITION_ID=$(curl -sS --fail -G \
   --data-urlencode "api-version=2022-04-01" \
   --data-urlencode "\$filter=roleName eq 'ROLE_NAME'" \
   -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[0].id // empty')
-[ -n "$ROLE_DEFINITION_ID" ] || { echo "ERROR: role 'ROLE_NAME' not found in subscription $SUBSCRIPTION_ID."; exit 1; }
+[ -n "$ROLE_DEFINITION_ID" ] || { echo "ERROR: role 'ROLE_NAME' not found in subscription $SUBSCRIPTION_ID. During setup, run Rollback a Failed Setup."; exit 1; }
 
 # The assignment name must be a new GUID. uuidgen is often missing from minimal
 # images, so fall back to the kernel's generator, then Python.
