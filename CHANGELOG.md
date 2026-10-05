@@ -42,6 +42,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- `resolve_credentials_key` sets `KEY` without printing the passphrase; errors go to stderr.
+- Add Client Secret treats any `addPassword` failure other than an HTTP rejection (curl exit 22), or an unreadable response, as possibly having created a secret, and revokes it before stopping.
 - First-time setup stops on a failed encryption, deletes the plaintext and points to the provider's setup rollback.
 - Azure records each member's secret `keyId` under `key_ids` (Add Client Secret, rotation), and offboarding removes the current and every pending secret, deleting the credential file only when none remain.
 - The README's manual install downloads every file listed in `MANIFEST`, including `scripts/discard-credential.sh`.

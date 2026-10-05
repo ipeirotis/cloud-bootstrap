@@ -50,10 +50,10 @@ This email is used to name the per-user encrypted credentials file: `.cloud-cred
 
 ## Resolve Credentials Key
 
-Use this logic everywhere the encryption key is needed. Determine the provider from context (the user's request during setup, or `.cloud-config.json` in subsequent sessions), then resolve:
+Use this logic everywhere the encryption key is needed. Determine the provider from context (the user's request during setup, or `.cloud-config.json` in subsequent sessions), then resolve. The function sets `KEY` and never prints it, so the passphrase stays out of terminal output and transcripts:
 
 ```bash
-resolve_credentials_key() {
+resolve_credentials_key() {   # sets KEY; prints nothing on success
   local provider="$1"  # gcp, aws, or azure
   case "$provider" in
     gcp)   KEY="${GCP_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}" ;;
@@ -62,12 +62,14 @@ resolve_credentials_key() {
     *)     KEY="$CLOUD_CREDENTIALS_KEY" ;;
   esac
   if [ -z "$KEY" ]; then
-    echo "ERROR: No credentials key found."
-    echo "Set ${provider^^}_CREDENTIALS_KEY or CLOUD_CREDENTIALS_KEY."
+    echo "ERROR: No credentials key found." >&2
+    echo "Set ${provider^^}_CREDENTIALS_KEY or CLOUD_CREDENTIALS_KEY." >&2
     return 1
   fi
-  printf '%s\n' "$KEY"
 }
+
+# Usage: call it directly (not in $(...)), then use $KEY without echoing it
+resolve_credentials_key gcp || exit 1
 ```
 
 ## Quick Check: Which Phase Am I In?

@@ -417,17 +417,28 @@ USER_EMAIL=$(git config user.email)
 # temp dir outside the repo, removed on any exit, including an interruption
 RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
 
-# Add a new client secret labeled with the user's email; fail on HTTP errors
+# Add a new client secret labeled with the user's email. curl exit 22 means
+# Graph rejected the request (no secret was created); any other failure, or a
+# response we cannot read, leaves the outcome unknown, so revoke whatever this
+# call may have created (the newest secret with this label) before stopping.
+discard_unknown_secret() {
+  echo "ERROR: $1; revoking any secret this call created."
+  OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+    bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+  exit 1
+}
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
-  > "$RESP_DIR/secret.json") || { echo "ERROR: addPassword failed; no secret was created."; exit 1; }
+  > "$RESP_DIR/secret.json"); RC=$?
+[ "$RC" -ne 22 ] || { echo "ERROR: Graph rejected addPassword; no secret was created."; exit 1; }
+[ "$RC" -eq 0 ] || discard_unknown_secret "addPassword outcome unknown (curl exit $RC)"
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 # Keep the new secret's keyId: removePassword needs it if a later step fails
 NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
 [ -n "$SECRET" ] && [ -n "$NEW_SECRET_KEY_ID" ] \
-  || { echo "ERROR: addPassword response has no secretText or keyId."; exit 1; }
+  || discard_unknown_secret "addPassword response has no secretText or keyId"
 echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
 
 # Assemble credentials (appId and tenant are the same for all team members).
