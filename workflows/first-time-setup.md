@@ -113,7 +113,10 @@ Create a SessionStart hook that automatically installs the provider CLI **and** 
 4. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json`.
 5. **Only after that commit, delete the plaintext and the setup record:**
    ```bash
-   rm -f credentials.json .cloud-setup-pending.json
+   # The marker goes first: a marker left without the plaintext would make
+   # the next session roll back the identity this run just committed
+   rm -f .cloud-setup-pending.json
+   rm -f credentials.json
    ```
 
 This ensures that future sessions start with the CLI installed and credentials already activated — no manual authentication needed.

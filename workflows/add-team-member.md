@@ -84,7 +84,10 @@ Using the bootstrap token and provider-specific commands:
 5. Commit the new encrypted credentials file and `.cloud-config.json` (it now holds this member's `key_ids` entry for GCP or Azure, and any `unrevoked` record).
 6. **Only after that commit, delete the plaintext** (until then its presence is what marks the onboarding as unfinished for the next session, see "Recovering an Interrupted Run" in SKILL.md):
    ```bash
-   rm -f credentials.json .cloud-setup-pending.json
+   # The marker goes first: a marker left without the plaintext would make
+   # the next session roll back the identity this run just committed
+   rm -f .cloud-setup-pending.json
+   rm -f credentials.json
    ```
    (`.cloud-setup-pending.json` exists only for AWS, where the snippet records the new member's IAM user before creating it.)
 

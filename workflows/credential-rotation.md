@@ -95,18 +95,20 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      ```bash
      NEW_KEY_ID=$(jq -r .access_key_id credentials.json)
      # The key's owner, from AWS itself (works in a fresh shell); it must be
-     # this member's user when IAM_USER is known from step 3
-     KEY_OWNER=$(aws iam get-access-key-last-used --access-key-id "$NEW_KEY_ID" --query UserName --output text)
-     IAM_USER="${IAM_USER:-$KEY_OWNER}"
-     ARN=""
+     # this member's user when IAM_USER is known from step 3. Both lookups are
+     # retried: either can fail transiently while the new key propagates
+     KEY_OWNER=""; ARN=""
      for delay in 0 5 10 20 40; do
        sleep "$delay"
-       ARN=$(env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
+       [ -n "$KEY_OWNER" ] || KEY_OWNER=$(aws iam get-access-key-last-used --access-key-id "$NEW_KEY_ID" \
+         --query UserName --output text 2>/dev/null) || KEY_OWNER=""
+       [ -n "$ARN" ] || ARN=$(env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
          AWS_ACCESS_KEY_ID="$NEW_KEY_ID" \
          AWS_SECRET_ACCESS_KEY="$(jq -r .secret_access_key credentials.json)" \
-         aws sts get-caller-identity --query Arn --output text 2>/dev/null) && break
-       ARN=""
+         aws sts get-caller-identity --query Arn --output text 2>/dev/null) || ARN=""
+       [ -n "$KEY_OWNER" ] && [ -n "$ARN" ] && break
      done
+     IAM_USER="${IAM_USER:-$KEY_OWNER}"
      if [ -n "$ARN" ] && [ "${ARN##*/}" = "$IAM_USER" ] && [ "$KEY_OWNER" = "$IAM_USER" ]; then
        echo "$ARN"
      else
