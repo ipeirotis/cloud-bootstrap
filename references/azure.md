@@ -58,7 +58,7 @@ KEY="${AZURE_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
 # --- Per-file credential age, as in the Authenticate workflow ---
-COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+COMMIT_TS=$(git log --follow --diff-filter=AM -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
 if [ -z "$COMMIT_TS" ]; then
   COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
 fi

@@ -34,7 +34,7 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    ```bash
    # Per-file age: derive from the file's last git commit time, falling back to
    # the shared created_at only when git history is unavailable.
-   COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
+   COMMIT_TS=$(git log --follow --diff-filter=AM -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
    if [ -z "$COMMIT_TS" ]; then
      COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' .cloud-config.json)" +%s 2>/dev/null)
    fi

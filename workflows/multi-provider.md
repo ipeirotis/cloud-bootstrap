@@ -45,7 +45,7 @@ If `.cloud-config.json` has a top-level `provider` field (single-provider format
 1. Read the existing single-provider config and the new provider's reference file.
 2. **Provision the new provider** exactly as First-Time Setup does for it: resolve that provider's encryption key first (stop if missing), propose roles and get the user's approval, get its bootstrap token, create the identity, grant only the approved roles, generate its credentials, and encrypt them to `.cloud-credentials.<new-provider>.<email>.enc`. Delete the plaintext immediately.
 3. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one (each with its own `roles` and `created_at`).
-4. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc`.
+4. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc` with `git mv`, in a commit that changes nothing else about them. The hooks' age check reads `git log --follow --diff-filter=AM`, which follows the rename and ignores it, so a migrated key keeps its real age.
 5. Replace `.claude/hooks/cloud-auth.sh` with the multi-provider hook below.
 6. Verify each provider's credentials with its smoke test, then commit all changes together.
 
@@ -111,7 +111,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   if [ -z "$KEY" ]; then continue; fi
 
   # Per-file credential age, as in the Authenticate workflow
-  COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+  COMMIT_TS=$(git log --follow --diff-filter=AM -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
   if [ -z "$COMMIT_TS" ]; then
     COMMIT_TS=$(date -d "$(jq -r ".providers[$i].created_at // .created_at // empty" "$CONFIG")" +%s 2>/dev/null || true)
   fi

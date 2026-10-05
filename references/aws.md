@@ -68,7 +68,7 @@ KEY="${AWS_CREDENTIALS_KEY:-$CLOUD_CREDENTIALS_KEY}"
 if [ -z "$KEY" ]; then exit 0; fi
 
 # --- Per-file credential age, as in the Authenticate workflow ---
-COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
+COMMIT_TS=$(git log --follow --diff-filter=AM -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
 if [ -z "$COMMIT_TS" ]; then
   COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
 fi
@@ -213,6 +213,21 @@ GROUP_NAME="claude-agents-${REPO_SLUG}"
 USER_PREFIX="claude-agent-${REPO_SLUG}"
 IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
 
+# Undo whatever this block created, so a failed run leaves nothing that would
+# block a retry at the collision checks below.
+CREATED_USER=""
+rollback_aws_setup() {
+  if [ -n "$CREATED_USER" ]; then
+    for k in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
+      aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"
+    done
+    aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" 2>/dev/null
+    aws iam delete-user --user-name "$IAM_USER"
+  fi
+  aws iam delete-group --group-name "$GROUP_NAME"
+  rm -f credentials.json
+}
+
 # Create this repo's group; an existing group of that name belongs to another
 # setup, so stop rather than share it
 if ! aws iam create-group --group-name "$GROUP_NAME"; then
@@ -220,16 +235,18 @@ if ! aws iam create-group --group-name "$GROUP_NAME"; then
   exit 1
 fi
 
-# Create the user and add to group; stop at the first failure
+# Create the user and add to group; on any failure, roll back and stop
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
-  exit 1
+  echo "ERROR: could not create IAM user $IAM_USER (it may already exist); rolling back."
+  rollback_aws_setup; exit 1
 fi
-aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" || exit 1
+CREATED_USER=1
+aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
+  || { echo "ERROR: add-user-to-group failed; rolling back."; rollback_aws_setup; exit 1; }
 
 # Create access key
 (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json) \
-  || { rm -f credentials.json; exit 1; }
+  || { echo "ERROR: create-access-key failed; rolling back."; rollback_aws_setup; exit 1; }
 ```
 
 Reformat `credentials.json` to a clean structure before encrypting:
@@ -244,6 +261,8 @@ mv credentials_clean.json credentials.json
 ```
 
 **Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
+
+If a later setup step fails (attaching a policy, encrypting, committing), undo the same resources before retrying: delete the user's access keys, remove the user from `$GROUP_NAME`, delete the user, detach the group's policies, and delete the group.
 
 **For `.cloud-config.json`:** set `service_account` to `$GROUP_NAME` (the group) and add `"iam_user_prefix": "$USER_PREFIX"`, so later workflows derive the same names.
 
@@ -291,7 +310,14 @@ mv credentials_clean.json credentials.json
 
 ## Grant Roles (Attach Policies to Group)
 
-Policies are attached to the **group**, not individual users. This way all team members share the same permissions. Use this repo's group: `$GROUP_NAME` from First-Time Setup, or `GROUP_NAME=$(aws_cfg service_account)` in a later session.
+Policies are attached to the **group**, not individual users. This way all team members share the same permissions. Each snippet below derives the group itself, because it may run in a fresh shell and, during first-time setup, before `.cloud-config.json` exists. Run this first in the same snippet:
+
+```bash
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+# Configured group, else the one First-Time Setup derives for this repo
+GROUP_NAME="${GROUP_NAME:-$(aws_cfg service_account)}"
+GROUP_NAME="${GROUP_NAME:-claude-agents-$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-24)}"
+```
 
 For AWS managed policies:
 

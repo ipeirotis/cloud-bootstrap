@@ -17,7 +17,11 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 
 3. **Record the OLD key identifier first**, before creating or overwriting anything. The old key id often lives only in the current credential material, so capture it now or it becomes unrecoverable once the `.enc` is replaced:
    - **GCP:** decrypt the existing `ENC_FILE` and read `OLD_KEY_ID=$(... | jq -r .private_key_id)` (or list keys via "Key Management" and note the current one).
-   - **AWS:** `OLD_KEY_ID` is the existing `access_key_id` (decrypt the current `ENC_FILE` to read it).
+   - **AWS:** `OLD_KEY_ID` is the existing `access_key_id` (decrypt the current `ENC_FILE` to read it). Also derive the user it belongs to now, since the compromise path revokes before step 4 runs (helpers from aws.md "IAM Names"):
+     ```bash
+     USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
+     IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
+     ```
    - **Azure:** list the app's existing secret `keyId`s now (see "Secret Management") and note which one to remove.
    Save it as `OLD_KEY_ID` for the revoke step.
 4. Create a **new key** using the same commands as the "Create Key" / "Create Access Key" / "Add Client Secret" section in the provider reference.
@@ -35,10 +39,13 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    - **GCP:**
      ```bash
      TMPCFG=$(mktemp -d)
-     env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json
-     env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth print-access-token >/dev/null \
-       && env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud config get-value account
-     rm -rf "$TMPCFG"
+     if env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json \
+        && env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth print-access-token >/dev/null; then
+       env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud config get-value account
+       rm -rf "$TMPCFG"
+     else
+       rm -rf "$TMPCFG"; echo "ERROR: the replacement key failed verification; do not encrypt it or revoke the old key."; exit 1
+     fi
      ```
    - **AWS** (new keys can take a few seconds to propagate):
      ```bash
@@ -50,11 +57,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    - **Azure:**
      ```bash
      TMPCFG=$(mktemp -d)
-     AZURE_CONFIG_DIR="$TMPCFG" az login --service-principal \
-       -u "$(jq -r .appId credentials.json)" -p "$(jq -r .password credentials.json)" \
-       --tenant "$(jq -r .tenant credentials.json)" >/dev/null \
-       && AZURE_CONFIG_DIR="$TMPCFG" az account show --query user.name -o tsv
-     rm -rf "$TMPCFG"
+     if AZURE_CONFIG_DIR="$TMPCFG" az login --service-principal \
+          -u "$(jq -r .appId credentials.json)" -p "$(jq -r .password credentials.json)" \
+          --tenant "$(jq -r .tenant credentials.json)" >/dev/null \
+        && AZURE_CONFIG_DIR="$TMPCFG" az account show --query user.name -o tsv; then
+       rm -rf "$TMPCFG"
+     else
+       rm -rf "$TMPCFG"; echo "ERROR: the replacement secret failed verification; do not encrypt it or revoke the old one."; exit 1
+     fi
      ```
    Continue only if the reported identity is the expected service account, user, or app.
 6. Re-encrypt with the user's passphrase. Use the multi-provider naming convention if the config has a `providers` array:
@@ -92,5 +102,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 8. Commit the updated encrypted credentials file.
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
    - **GCP:** List keys (see "Key Management" in gcp.md), identify the current user's *previous* key, delete it.
-   - **AWS:** Delete the old access key: `aws iam delete-access-key --user-name "$IAM_USER" --access-key-id OLD_KEY_ID`
+   - **AWS:** Delete the old access key, with `IAM_USER` as derived in step 3 (it must not be empty):
+     ```bash
+     [ -n "$IAM_USER" ] && [ -n "$OLD_KEY_ID" ] || { echo "ERROR: derive IAM_USER and OLD_KEY_ID (step 3) first."; exit 1; }
+     aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$OLD_KEY_ID"
+     ```
    - **Azure:** Remove the *previous* client secret (see "Secret Management" in azure.md).
