@@ -347,6 +347,10 @@ Delete a member's key (if a team member leaves or a key is compromised). Look th
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
+# Resolve the identity here too: this block may run in a fresh shell
+PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
 KEY_ID=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp") | .key_ids[$e]) else .key_ids[$e] end) // empty' .cloud-config.json)
 [ -n "$KEY_ID" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
 # --fail turns a 401/403/404 into an error: keep the member's .enc file and

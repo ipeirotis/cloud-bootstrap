@@ -146,6 +146,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -n "$NEW_KEY_ID" ] || { echo "ERROR: could not determine the new key ID; nothing recorded."; exit 1; }
    gcpcfg() { jq -r --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider==\"gcp\")) else . end) | $1 // empty" .cloud-config.json; }
    OLD_KEY_ID="${OLD_KEY_ID:-$(gcpcfg '.key_ids[$e]')}"
+   [ "${OLD_KEY_REVOKED:-}" = 1 ] && OLD_KEY_ID=""     # revoked early (compromise path)
    [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
    if [ -z "$OLD_KEY_ID" ] && [ -z "$(gcpcfg '.revoke_pending[$e]')" ] && [ "${OLD_KEY_REVOKED:-}" != 1 ]; then
      echo "WARNING: no old key ID known. Unless the old key was already revoked (compromise path), list keys (Key Management), set OLD_KEY_ID, and re-run this step."
@@ -177,6 +178,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
        else clr end' .cloud-config.json > .cloud-config.json.tmp \
        && mv .cloud-config.json.tmp .cloud-config.json
+     # The key is gone: make sure a later step 8 (compromise path) does not
+     # queue it again
+     unset OLD_KEY_ID; OLD_KEY_REVOKED=1
      ```
      Commit `.cloud-config.json`.
    - **AWS:** Delete the old access key, with `IAM_USER` as derived in step 3 (it must not be empty):
