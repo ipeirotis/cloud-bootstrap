@@ -343,7 +343,7 @@ curl -X GET \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` entry names an old key a rotation could not delete yet; delete it the same way (Credential Rotation step 9).
+Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` list names old keys a rotation could not delete yet; the snippet below deletes those too, since they are still live.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -351,21 +351,32 @@ MEMBER_EMAIL="departed-user@example.com"
 PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
-KEY_ID=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp") | .key_ids[$e]) else .key_ids[$e] end) // empty' .cloud-config.json)
-[ -n "$KEY_ID" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
-# --fail turns a 401/403/404 into an error: keep the member's .enc file and
-# map entry until Google confirms the key is gone.
-if curl -sS --fail -X DELETE \
-  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$KEY_ID" \
-  -H "Authorization: Bearer $TOKEN"; then
-  git rm -q --ignore-unmatch ".cloud-credentials.${MEMBER_EMAIL}.enc" ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc"
-  jq --arg e "$MEMBER_EMAIL" '
-    if .providers then .providers |= map(if .provider == "gcp" then del(.key_ids[$e]) else . end)
-    else del(.key_ids[$e]) end' .cloud-config.json > .cloud-config.json.tmp \
-    && mv .cloud-config.json.tmp .cloud-config.json
-else
-  echo "ERROR: key $KEY_ID was not deleted; the member's files are unchanged."; exit 1
+# The member's current key plus any old keys still awaiting revocation
+IDS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end)
+  | ([.key_ids[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end)) | unique | .[]' .cloud-config.json)
+[ -n "$IDS" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
+# --fail turns a 401/403/404 into an error. Each ID leaves the config only once
+# Google confirms; the .enc file goes only when every key is gone.
+FAILED=""
+for ID in $IDS; do
+  if curl -sS --fail -X DELETE \
+    "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
+    -H "Authorization: Bearer $TOKEN" >/dev/null; then
+    jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
+      def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
+        | (if .revoke_pending[$e] then .revoke_pending[$e] = ((.revoke_pending[$e] | if type == "string" then [.] else . end) - [$id]) else . end)
+        | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end);
+      if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
+      else clr end' .cloud-config.json > .cloud-config.json.tmp \
+      && mv .cloud-config.json.tmp .cloud-config.json
+  else
+    FAILED="$FAILED $ID"
+  fi
+done
+if [ -n "$FAILED" ]; then
+  echo "ERROR: still active:$FAILED. The member's .enc file and their remaining IDs stay; retry with a fresh token."; exit 1
 fi
+git rm -q --ignore-unmatch ".cloud-credentials.${MEMBER_EMAIL}.enc" ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc"
 ```
 
 Commit the removed `.enc` file and the updated `.cloud-config.json` together.

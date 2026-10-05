@@ -12,8 +12,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 > revoked key and lock the user out until they repeat privileged onboarding.
 > **Exception:** for a suspected/known compromise, containment wins: capture
 > `OLD_KEY_ID` (step 3), then **revoke it at once** (the provider-side delete in
-> step 9), before creating the replacement, accepting the brief lockout. Then
-> continue with steps 4–8.
+> step 9; for GCP with `COMPROMISE=1`), before creating the replacement,
+> accepting the brief lockout. Then continue with steps 4–8.
 
 3. **Record the OLD key identifier first**, before creating or overwriting anything. The old key id often lives only in the current credential material, so capture it now or it becomes unrecoverable once the `.enc` is replaced:
    - **GCP:** the member's `key_ids` entry in `.cloud-config.json` already holds it, committed, so it survives fresh shells until step 8 replaces it. For setups without that entry, decrypt the existing `ENC_FILE` and read `OLD_KEY_ID=$(... | jq -r .private_key_id)` (or list keys via "Key Management" and note the current one), and keep it in the same shell through step 8.
@@ -137,7 +137,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 7. **Do not reset the shared top-level `created_at`** in `.cloud-config.json` — that field is repo-wide, so bumping it makes every other team member's still-old `.cloud-credentials.*.enc` look freshly rotated and suppresses their 180-day age warning. Credential age is tracked **per file** via each `.enc` file's git commit time (the Authenticate age check uses that), so committing the rotated file in the next step updates only this user's age. (If you maintain optional per-file age metadata, update only this credential's entry — never the shared timestamp.)
-8. **GCP:** point this member's `key_ids` entry at `NEW_KEY_ID`, and move the old ID into `revoke_pending` until step 9 confirms it is gone, so a failed revoke never loses the only record of a live key. The old ID comes from this shell or, in a fresh one, from the `key_ids` entry being replaced. (In the compromise path step 9 already revoked the old key and cleared that entry, so nothing is pending.)
+8. **GCP:** point this member's `key_ids` entry at `NEW_KEY_ID`, and add the old ID to the member's `revoke_pending` list until step 9 confirms it is gone, so a failed revoke never loses the only record of a live key. The list keeps every earlier ID still awaiting deletion, so a second rotation never overwrites one. The old ID comes from this shell or, in a fresh one, from the `key_ids` entry being replaced. (In the compromise path step 9 already revoked the old key and cleared that entry, so nothing is pending.)
    ```bash
    USER_EMAIL=$(git config user.email)
    # In a fresh shell, read the new key's ID back from the re-encrypted file
@@ -148,39 +148,50 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    OLD_KEY_ID="${OLD_KEY_ID:-$(gcpcfg '.key_ids[$e]')}"
    [ "${OLD_KEY_REVOKED:-}" = 1 ] && OLD_KEY_ID=""     # revoked early (compromise path)
    [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
-   if [ -z "$OLD_KEY_ID" ] && [ -z "$(gcpcfg '.revoke_pending[$e]')" ] && [ "${OLD_KEY_REVOKED:-}" != 1 ]; then
+   if [ -z "$OLD_KEY_ID" ] && [ "${OLD_KEY_REVOKED:-}" != 1 ]; then
      echo "WARNING: no old key ID known. Unless the old key was already revoked (compromise path), list keys (Key Management), set OLD_KEY_ID, and re-run this step."
    fi
    jq --arg e "$USER_EMAIL" --arg new "$NEW_KEY_ID" --arg old "${OLD_KEY_ID:-}" '
-     def upd: .key_ids[$e] = $new | if $old != "" then .revoke_pending[$e] = $old else . end;
+     def upd: .key_ids[$e] = $new
+       | if $old != "" then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [$old] | unique) else . end;
      if .providers then .providers |= map(if .provider == "gcp" then upd else . end) else upd end' \
      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
    ```
    Commit the updated encrypted credentials file (and, for GCP, `.cloud-config.json`).
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
-   - **GCP:** delete the old key, failing on any HTTP error so a rejected delete is not mistaken for a revoked key, and clear its record only once Google confirms. From a fresh shell after step 8, the ID comes from `revoke_pending`. In the compromise path (before step 4) set `OLD_KEY_ID` from step 3, i.e. the member's current `key_ids` entry; never take it from `key_ids` after step 8, which then names the new key.
+   - **GCP:** delete every key in the member's `revoke_pending` list (plus `OLD_KEY_ID` if this shell has it), failing on any HTTP error so a rejected delete is not mistaken for a revoked key, and clear each record only once Google confirms. In the compromise path (step 9 run before step 4, when `key_ids` still names the compromised key) set `COMPROMISE=1` so the current `key_ids` entry is revoked too, even from a fresh shell. Never set it after step 8, when `key_ids` names the new key.
      ```bash
      # Re-resolve everything from config: this may run in a fresh shell
      PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
      SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
      [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
      USER_EMAIL=$(git config user.email)
-     OLD_KEY_ID="${OLD_KEY_ID:-$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .revoke_pending[$e] // empty' .cloud-config.json)}"
-     [ -n "$OLD_KEY_ID" ] || { echo "ERROR: no OLD_KEY_ID in this shell or in revoke_pending."; exit 1; }
-     curl -sS --fail -X DELETE \
-       "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$OLD_KEY_ID" \
-       -H "Authorization: Bearer $TOKEN" \
-       || { echo "ERROR: old key $OLD_KEY_ID is still active and stays in revoke_pending; retry with a fresh token."; exit 1; }
-     # Clear the pending entry, and the key_ids entry too if it still names the
-     # revoked key (compromise path, before the replacement exists)
-     jq --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
-       def clr: del(.revoke_pending[$e]) | if .key_ids[$e] == $old then del(.key_ids[$e]) else . end;
-       if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
-       else clr end' .cloud-config.json > .cloud-config.json.tmp \
-       && mv .cloud-config.json.tmp .cloud-config.json
-     # The key is gone: make sure a later step 8 (compromise path) does not
-     # queue it again
-     unset OLD_KEY_ID; OLD_KEY_REVOKED=1
+     gcpcfg() { jq -r --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider==\"gcp\")) else . end) | $1 // empty" .cloud-config.json; }
+     IDS="$(gcpcfg '((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]') ${OLD_KEY_ID:-}"
+     [ "${COMPROMISE:-}" = 1 ] && IDS="$IDS $(gcpcfg '.key_ids[$e]')"
+     IDS=$(printf '%s\n' $IDS | sort -u)
+     [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no OLD_KEY_ID, no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }
+     FAILED=""
+     for ID in $IDS; do
+       if curl -sS --fail -X DELETE \
+            "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
+            -H "Authorization: Bearer $TOKEN" >/dev/null; then
+         # Gone: drop it from revoke_pending, and from key_ids if it is still
+         # named there (compromise path, before the replacement exists)
+         jq --arg e "$USER_EMAIL" --arg id "$ID" '
+           def clr: (if .revoke_pending[$e] then .revoke_pending[$e] = (((.revoke_pending[$e]) | if type == "string" then [.] else . end) - [$id]) else . end)
+             | (if .revoke_pending[$e] == [] then del(.revoke_pending[$e]) else . end)
+             | (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end);
+           if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
+           else clr end' .cloud-config.json > .cloud-config.json.tmp \
+           && mv .cloud-config.json.tmp .cloud-config.json
+       else
+         FAILED="$FAILED $ID"
+       fi
+     done
+     [ -z "$FAILED" ] || { echo "ERROR: still active, kept in config for a retry with a fresh token:$FAILED"; exit 1; }
+     # All gone: make sure a later step 8 (compromise path) queues nothing
+     unset OLD_KEY_ID COMPROMISE; OLD_KEY_REVOKED=1
      ```
      Commit `.cloud-config.json`.
    - **AWS:** Delete the old access key, with `IAM_USER` as derived in step 3 (it must not be empty):
