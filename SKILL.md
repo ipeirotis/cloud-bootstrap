@@ -76,7 +76,7 @@ resolve_credentials_key gcp || exit 1
 
 Determine the current user's email, then:
 
-0. **First, look for an interrupted run.** Setup, Add Team Member and rotation keep the new credential's plaintext in `credentials.json` at the repository root until all their bookkeeping is done, and encrypt through a `.cloud-credentials.*.tmp.*` file. If either exists, a previous run stopped part-way (possibly in another shell, where no trap could clean up) and a live provider credential may be untracked. Do not start a new workflow; follow "Recovering an Interrupted Run" below first.
+0. **First, look for an interrupted run.** First-time setup and adding a provider record the new identity's non-secret names in `.cloud-setup-pending.json` before creating it; setup, Add Team Member and rotation keep the new credential's plaintext in `credentials.json` at the repository root until all their bookkeeping is done, and encrypt through a `.cloud-credentials.*.tmp.*` file. If any of these exists, a previous run stopped part-way (possibly in another shell, where no trap could clean up) and a live provider credential may be untracked. Do not start a new workflow; follow "Recovering an Interrupted Run" below first.
 1. If `.cloud-config.json` does NOT exist → read `workflows/first-time-setup.md`
 2. If `.cloud-config.json` exists, check for the user's encrypted credentials file. The file may use **either** naming convention:
    - Single-provider: `.cloud-credentials.<user-email>.enc`
@@ -151,14 +151,16 @@ It finds everything it needs from `credentials.json`, `.cloud-config.json` and t
 
 ## Recovering an Interrupted Run
 
-When step 0 of the phase check finds `credentials.json` or a `.cloud-credentials.*.tmp.*` file, decide from what is on disk (`ENC_FILE` is the current user's credential file for the provider in `credentials.json`; `KEY` is their passphrase):
+First-time setup and adding a provider write `.cloud-setup-pending.json` (gitignored, not secret) before creating the identity: the provider and the names a rollback needs, which otherwise live only in the shell that created them. It is deleted once `.cloud-config.json` describes the identity.
+
+When step 0 of the phase check finds `.cloud-setup-pending.json`, `credentials.json` or a `.cloud-credentials.*.tmp.*` file, decide from what is on disk (`ENC_FILE` is the current user's credential file for the provider in `credentials.json`; `KEY` is their passphrase):
 
 1. **Encryption finished.** `ENC_FILE` exists and decrypts to exactly `credentials.json`:
    ```bash
    printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" | cmp -s - credentials.json && echo finished
    ```
-   Only bookkeeping was left. Delete the temp files, then finish the interrupted workflow from its step after encryption: First-Time Setup step 6 (write `.cloud-config.json`), Add Team Member step 4 (GCP `key_ids`), or rotation step 8. Those steps read the IDs from `credentials.json`, so delete it only after them, then commit.
-2. **First-time setup, not finished.** Otherwise, if `.cloud-config.json` is not in the last commit (`git cat-file -e HEAD:.cloud-config.json` fails): delete `credentials.json`, the temp files, any uncommitted `.cloud-credentials.*.enc` and `.cloud-config.json`, then run the provider's setup rollback (First-Time Setup, step 2), which deletes the new identity with its keys, and start setup again.
+   Only bookkeeping was left. Delete the temp files, then finish the interrupted workflow from its step after encryption: First-Time Setup step 6 (write `.cloud-config.json`), Multi-Provider step 3, Add Team Member step 4 (GCP `key_ids`), or rotation step 8. Those steps read the IDs from `credentials.json`, so delete it (and `.cloud-setup-pending.json`) only after them, then commit.
+2. **First-time setup or provider addition, not finished.** Otherwise, if `.cloud-setup-pending.json` exists: run "Rollback a Failed Setup" in the reference for its `provider`. It reads the identity's names from that file, removes the identity's role grants, the identity and its keys, and deletes the file only when everything is gone. Then delete `credentials.json`, the temp files, and any uncommitted `.cloud-credentials` file for that provider (and, for a first-time setup, an uncommitted `.cloud-config.json`), and start that workflow again. A setup started before this record existed has no such file: if `.cloud-config.json` is not in the last commit, treat it the same way and give the rollback the identity's names by hand.
 3. **Add Team Member or rotation, not finished.** Otherwise the new credential in `credentials.json` was never safely stored. Revoke it and delete the temp files: `bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh PROVIDER MODE` with `MODE=key` for a rotation (`rotating[<email>]` is set in `.cloud-config.json`, or the user's `.enc` is committed), else `MODE=member` (Add Team Member; for AWS this also deletes the new IAM user). Then restart that workflow; a rotation resumes at its step 4.
 
 A run interrupted after the plaintext is gone needs no recovery here: the workflows delete `credentials.json` only once everything is recorded, and a rotation that stopped before step 8 is resumed from its `rotating` record.

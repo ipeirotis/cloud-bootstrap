@@ -204,6 +204,11 @@ case $S in
   0) echo "ERROR: $SA_ID already exists; choose another accountId with the user."; exit 1 ;;
   2) echo "ERROR: could not check whether $SA_ID exists; nothing created."; exit 1 ;;
 esac
+# Record the account before creating it (not secret), so "Rollback a Failed
+# Setup" can find it from any shell if this run stops part-way
+jq -n --arg p "$PROJECT_ID" --arg s "$SA_ID@$PROJECT_ID.iam.gserviceaccount.com" \
+  '{provider: "gcp", project_id: $p, service_account: $s}' > .cloud-setup-pending.json \
+  || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 RESP=$(umask 077 && mktemp)
 # (if/else so the status is captured even under `set -e`)
 if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST \
@@ -219,16 +224,19 @@ if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST \
 case "$RC:$HTTP" in
   0:2??) ;;   # created
   0:4??)      # Google rejected the request (409 = it already exists): nothing was created
-    rm -f "$RESP"
+    rm -f "$RESP" .cloud-setup-pending.json
     echo "ERROR: service account creation was rejected (HTTP $HTTP); nothing was created."
     exit 1 ;;
   *)          # a 5xx or a transport/local failure: the account may exist anyway.
               # It did not exist before, so if it exists now, this call made it.
     rm -f "$RESP"
-    if sa_exists; then
+    if sa_exists; then S=0; else S=$?; fi
+    if [ "$S" = 0 ]; then
       curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
-        && echo "Removed $SA_ID, which the failed call had created." \
-        || echo "WARNING: could not delete $SA_ID; delete it by hand before retrying."
+        && { echo "Removed $SA_ID, which the failed call had created."; rm -f .cloud-setup-pending.json; } \
+        || echo "WARNING: could not delete $SA_ID; run Rollback a Failed Setup before retrying."
+    elif [ "$S" = 1 ]; then
+      rm -f .cloud-setup-pending.json   # nothing was created
     fi
     echo "ERROR: service account creation failed (curl exit $RC, HTTP ${HTTP:-none})."
     exit 1 ;;
@@ -238,11 +246,51 @@ if [ -z "$SA_EMAIL" ]; then
   # Created, but the response is unusable: remove the account so a retry is not
   # blocked by the pre-existing-account check
   curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
-    && echo "ERROR: creation response has no service-account email; removed $SA_ID." \
-    || echo "ERROR: creation response has no service-account email, and $SA_ID could not be deleted; delete it by hand."
+    && { echo "ERROR: creation response has no service-account email; removed $SA_ID."; rm -f .cloud-setup-pending.json; } \
+    || echo "ERROR: creation response has no service-account email, and $SA_ID could not be deleted; run Rollback a Failed Setup."
   exit 1
 fi
 echo "Created $SA_EMAIL; set SA_EMAIL to this in every later setup snippet."
+```
+
+### Rollback a Failed Setup
+
+Undo a first-time setup or provider addition that did not finish. Run it from any shell: it reads the account from `.cloud-setup-pending.json` (or `PROJECT_ID`/`SA_EMAIL`). It first removes the account from every binding in the project policy, since bindings of a deleted account linger for up to 60 days, then deletes the account, which deletes its keys with it. A 404 means the account is already gone.
+
+```bash
+PENDING=.cloud-setup-pending.json
+PROJECT_ID="${PROJECT_ID:-$(jq -r 'select(.provider == "gcp") | .project_id // empty' "$PENDING" 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r 'select(.provider == "gcp") | .service_account // empty' "$PENDING" 2>/dev/null)}"
+[ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (no GCP entry in $PENDING)."; exit 1; }
+RB_OK=1; WORK=$(mktemp -d)
+CRM="https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID"
+if curl -sS --fail -X POST "$CRM:getIamPolicy" -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" -d '{"options": {"requestedPolicyVersion": 3}}' > "$WORK/policy.json"; then
+  M="serviceAccount:$SA_EMAIL"
+  if jq -e --arg m "$M" 'any(.bindings[]?; (.members // []) | index($m))' "$WORK/policy.json" >/dev/null; then
+    # Same policy-preserving write as Grant Roles (etag, version, auditConfigs kept)
+    jq --arg m "$M" '.version = 3
+      | .bindings = [(.bindings // [])[] | .members -= [$m] | select(.members | length > 0)]
+      | {policy: .}' "$WORK/policy.json" > "$WORK/new-policy.json" \
+      && curl -sS --fail -X POST "$CRM:setIamPolicy" -H "Authorization: Bearer $TOKEN" \
+           -H "Content-Type: application/json" -d @"$WORK/new-policy.json" >/dev/null \
+      || { RB_OK=0; echo "WARNING: could not remove $SA_EMAIL from the project policy (409 = concurrent change: re-run)."; }
+  fi
+else
+  RB_OK=0; echo "WARNING: could not read the project policy; $SA_EMAIL's role bindings may remain."
+fi
+rm -rf "$WORK"
+HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+  "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" -H "Authorization: Bearer $TOKEN")
+case "$HTTP" in
+  200|404) echo "Service account $SA_EMAIL is deleted." ;;
+  *) RB_OK=0; echo "WARNING: could not delete $SA_EMAIL (HTTP $HTTP)." ;;
+esac
+if [ "$RB_OK" = 1 ]; then
+  rm -f credentials.json "$PENDING"; echo "Rollback complete."
+else
+  echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1
+fi
 ```
 
 `SA_EMAIL` (normally `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`, or `$SA_ID@...` if the user chose another id) is the identity every later step binds to: grant roles to it, create its key, and record it as `service_account` in `.cloud-config.json`.
@@ -350,7 +398,7 @@ case "$RC:$HTTP" in
     if [ -n "$NEW" ] && [ ! -f .cloud-config.json ]; then
       # First-time setup: no teammate can be onboarding yet, and the setup
       # rollback deletes the service account with every key on it
-      echo "Run the setup rollback (delete $SA_EMAIL) before retrying."
+      echo "Run Rollback a Failed Setup (it deletes $SA_EMAIL) before retrying."
     elif [ -n "$NEW" ]; then
       for NAME in $NEW; do
         jq --arg id "$NAME" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \

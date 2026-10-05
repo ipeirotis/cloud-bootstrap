@@ -194,6 +194,10 @@ if [ -n "$SP_HITS" ] || [ -n "$APP_HITS" ]; then
   exit 1
 fi
 
+# Record the name before creating anything (not secret), so "Rollback a Failed
+# Setup" can find the application from any shell if this run stops part-way
+jq -n --arg n "$SP_NAME" --arg s "${SUBSCRIPTION_ID:-}" '{provider: "azure", sp_name: $n, subscription: $s}' \
+  > .cloud-setup-pending.json || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 # Creating without a role assignment is the default (--skip-assignment is obsolete).
 # The output holds the new client secret: write it private (0600) from the start.
 (umask 077 && az ad sp create-for-rbac --name "$SP_NAME" > credentials.json)
@@ -261,6 +265,10 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value | length')
 [ "$EXISTING" = "0" ] || { echo "ERROR: an application named $SP_NAME already exists (or the lookup failed); choose another name with the user."; exit 1; }
+# Record the name before creating anything (not secret), so "Rollback a Failed
+# Setup" can find the application from any shell if this run stops part-way
+jq -n --arg n "$SP_NAME" --arg s "${SUBSCRIPTION_ID:-}" '{provider: "azure", sp_name: $n, subscription: $s}' \
+  > .cloud-setup-pending.json
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
@@ -268,6 +276,8 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
 APP_ID=$(jq -r '.appId // empty' "$RESP_DIR/app.json")
 APP_OBJECT_ID=$(jq -r '.id // empty' "$RESP_DIR/app.json")
 [ -n "$APP_ID" ] && [ -n "$APP_OBJECT_ID" ] || { echo "ERROR: application response lacks appId/id."; false; }
+jq --arg a "$APP_ID" --arg o "$APP_OBJECT_ID" '. + {app_id: $a, app_object_id: $o}' .cloud-setup-pending.json \
+  > .cloud-setup-pending.json.tmp && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
 
 # Step 2: Create service principal
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
@@ -305,16 +315,28 @@ The trap above only covers this block: the agent may run each snippet in its own
 ### Rollback a Failed Setup
 
 ```bash
-# Delete the application created above (this removes its service principal,
-# client secrets, and role assignments' principal) and the local plaintext.
-# Use the exact name or object id this setup printed: the name has a random
-# per-run suffix, so it cannot be re-derived from the repo.
-[ -n "$APP_OBJECT_ID" ] || [ -n "$SP_NAME" ] || { echo "ERROR: set APP_OBJECT_ID or SP_NAME from the failed setup's output."; exit 1; }
+# Delete the application created above (this removes its service principal and
+# client secrets) after its role assignments, and the local plaintext. Works
+# from any shell: the application is found from APP_OBJECT_ID or SP_NAME if
+# set, else from .cloud-setup-pending.json, else from the appId in a leftover
+# credentials.json. Needs GRAPH_TOKEN, plus ARM_TOKEN for role assignments.
+PENDING=.cloud-setup-pending.json
+pend() { jq -r --arg k "$1" 'select(.provider == "azure") | .[$k] // empty' "$PENDING" 2>/dev/null; }
+APP_OBJECT_ID="${APP_OBJECT_ID:-$(pend app_object_id)}"
+SP_NAME="${SP_NAME:-$(pend sp_name)}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
+APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+[ -n "$APP_OBJECT_ID" ] || [ -n "$APP_ID" ] || [ -n "$SP_NAME" ] \
+  || { echo "ERROR: set APP_OBJECT_ID, APP_ID or SP_NAME from the failed setup's output (no $PENDING)."; exit 1; }
+LOOKUP_OK=1
 if [ -z "$APP_OBJECT_ID" ]; then
-  APP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
-    --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
-    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+  if [ -n "$APP_ID" ]; then F="appId eq '$APP_ID'"; else F="displayName eq '$SP_NAME'"; fi
+  R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" --data-urlencode "\$filter=$F" \
+        -H "Authorization: Bearer $GRAPH_TOKEN") || LOOKUP_OK=0
+  APP_OBJECT_ID=$(printf '%s' "${R:-}" | jq -r '.value[0].id // empty')
 fi
+[ "$LOOKUP_OK" = 1 ] || { echo "ERROR: could not look the application up; nothing deleted. Retry."; exit 1; }
+RB_OK=1
 if [ -n "$APP_OBJECT_ID" ]; then
   # Role assignments are not removed with the service principal (they linger as
   # "Identity not found" and count against the subscription's quota): delete
@@ -326,12 +348,13 @@ if [ -n "$APP_OBJECT_ID" ]; then
     -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
   RA_OK=1
   if [ -n "$SP_OBJECT_ID" ]; then
-    if [ -n "${ARM_TOKEN:-}" ] && [ -n "${SUBSCRIPTION_ID:-}" ] \
-       && RAS=$(curl -sS --fail -G "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments" \
+    if [ -z "${ARM_TOKEN:-}" ] || [ -z "${SUBSCRIPTION_ID:-}" ]; then
+      RA_OK=0; echo "ERROR: set ARM_TOKEN and SUBSCRIPTION_ID so the role assignments can be removed."
+    elif R=$(curl -sS --fail -G "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments" \
             --data-urlencode "api-version=2022-04-01" \
             --data-urlencode "\$filter=principalId eq '$SP_OBJECT_ID'" \
-            -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[].id'); then
-      for RA in $RAS; do
+            -H "Authorization: Bearer $ARM_TOKEN"); then
+      for RA in $(printf '%s' "$R" | jq -r '.value[].id'); do
         curl -sS --fail -X DELETE "https://management.azure.com${RA}?api-version=2022-04-01" \
           -H "Authorization: Bearer $ARM_TOKEN" >/dev/null || RA_OK=0
       done
@@ -339,16 +362,29 @@ if [ -n "$APP_OBJECT_ID" ]; then
       RA_OK=0
     fi
   fi
-  [ "$RA_OK" = 1 ] || echo "WARNING: could not remove every role assignment of $SP_NAME; delete them in the portal (Access control (IAM))."
-  curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-    -H "Authorization: Bearer $GRAPH_TOKEN" \
-    && echo "Deleted application $SP_NAME." \
-    || echo "WARNING: could not delete application $APP_OBJECT_ID; remove it in the portal."
+  if [ "$RA_OK" = 1 ]; then
+    HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+      -H "Authorization: Bearer $GRAPH_TOKEN")
+    case "$HTTP" in
+      204|404) echo "Application ${SP_NAME:-$APP_OBJECT_ID} is deleted." ;;
+      *) RB_OK=0; echo "WARNING: could not delete application $APP_OBJECT_ID (HTTP $HTTP)." ;;
+    esac
+  else
+    # Keep the application: its service principal is how a retry finds the
+    # remaining role assignments
+    RB_OK=0; echo "WARNING: role assignments of ${SP_NAME:-$APP_OBJECT_ID} remain; the application is kept until they are removed."
+  fi
+else
+  echo "No application found: nothing was created, or it is already deleted."
 fi
-rm -f credentials.json app.json sp.json secret.json
+if [ "$RB_OK" = 1 ]; then
+  rm -f credentials.json "$PENDING"; echo "Rollback complete."
+else
+  echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1
+fi
 ```
 
-With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)"` first (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`.
+With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)"` first (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`, then delete `.cloud-setup-pending.json`.
 
 ## Grant Roles
 
@@ -459,9 +495,9 @@ RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
 # Add a new client secret labeled with the user's email. An HTTP 4xx means
 # Graph rejected the request (no secret was created); a 5xx, a transport or
 # local failure, or a response we cannot read leaves the outcome unknown. The
-# secrets listed before the call tell which secret, if any, the call created
-# (the user's current secret carries the same label, so "newest with the
-# label" is not enough), and only that one is removed.
+# secrets listed before the call tell which secrets are new since (the user's
+# current secret carries the same label, so "newest with the label" is not
+# enough); those are recorded for review, never removed blindly.
 list_secret_ids() { local R; R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN") && printf '%s' "$R" \
   | jq -r --arg n "claude-code-$USER_EMAIL" '.passwordCredentials[] | select(.displayName == $n) | .keyId'; }
@@ -473,10 +509,18 @@ discard_unknown_secret() {
   # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
   NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$SECRETS_BEFORE" | sed '/^$/d') || true)
   [ -n "$NEW" ] || { echo "No new secret exists; nothing to revoke."; exit 1; }
+  # Its secretText existed only in the response that never arrived, so nobody
+  # holds it; but a new same-label secret may instead come from an overlapping
+  # run of this member. Record the candidates for a person to check instead of
+  # removing them (commit .cloud-config.json).
   for K in $NEW; do
-    CRED_ID="$K" OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
-      bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+    jq --arg id "$K" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
+      '.unrevoked = ((.unrevoked // []) + [{provider: "azure", id: $id, member: $m, ambiguous: true,
+         note: "may be an unused secret from a failed addPassword call, or one an overlapping run created", at: $t}])' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
   done
+  echo "Secrets created since the request began (recorded as ambiguous under \"unrevoked\"):"; printf '  %s\n' $NEW
+  echo "Remove each one no run of yours is using (not in key_ids once that run is committed)."
   exit 1
 }
 # (if/else so the status is captured even under `set -e`)
@@ -552,7 +596,7 @@ OBJECT_ID=$( [ -n "$APP_ID" ] && curl -sS --fail -G "https://graph.microsoft.com
 # (revoke_pending), one an interrupted rotation saved (rotating), and any a
 # failed cleanup recorded as unrevoked
 IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
-  ([.unrevoked[]? | select(.provider == "azure" and .member == $e) | .id | split("/") | last]) as $u
+  ([.unrevoked[]? | select(.provider == "azure" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
   | (if .providers then (.providers[] | select(.provider=="azure")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)

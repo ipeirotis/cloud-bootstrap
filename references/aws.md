@@ -273,9 +273,17 @@ rollback_aws_setup() {
   rm -f credentials.json
 }
 
+# Record the names before creating anything (not secret), so "Rollback a
+# Failed Setup" can find them from any shell if this run stops part-way
+pending() { jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
+  '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
+  > .cloud-setup-pending.json; }
+pending || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
+
 # Create this repo's group; an existing group of that name belongs to another
 # setup, so stop rather than share it
 if ! aws iam create-group --group-name "$GROUP_NAME"; then
+  rm -f .cloud-setup-pending.json
   echo "ERROR: could not create IAM group $GROUP_NAME (it may already exist); choose another name with the user."
   exit 1
 fi
@@ -286,6 +294,8 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   rollback_aws_setup; exit 1
 fi
 CREATED_USER=1
+# The user is ours now: record it too (a pre-existing user of that name never is)
+pending "$IAM_USER" || { echo "ERROR: could not update .cloud-setup-pending.json; rolling back."; rollback_aws_setup; exit 1; }
 aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
   || { echo "ERROR: add-user-to-group failed; rolling back."; rollback_aws_setup; exit 1; }
 
@@ -307,7 +317,51 @@ Reformat `credentials.json` to a clean structure before encrypting:
 
 **Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
 
-If a later setup step fails (attaching a policy, encrypting, committing), undo the same resources before retrying: run `rollback_aws_setup` (define it as above, with `CREATED_USER=1`, `GROUP_NAME` and `IAM_USER` set), which deletes the user's access keys, removes the user from the group, deletes the user, detaches or deletes the group's policies, and deletes the group.
+If a later setup step fails (attaching a policy, encrypting, committing), or the run was interrupted, undo the same resources before retrying with "Rollback a Failed Setup" below.
+
+### Rollback a Failed Setup
+
+Run it from any shell: it reads the names from `.cloud-setup-pending.json` (or `AWS_ACCOUNT_ID`, `GROUP_NAME`, `IAM_USER`), checks the account, and deletes the user's access keys, its group memberships and the user, then the group's policies and the group. Anything already gone counts as done. The pending record is deleted only when everything is gone.
+
+```bash
+PENDING=.cloud-setup-pending.json
+pend() { jq -r --arg k "$1" 'select(.provider == "aws") | .[$k] // empty' "$PENDING" 2>/dev/null; }
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(pend account)}"
+GROUP_NAME="${GROUP_NAME:-$(pend group)}"
+IAM_USER="${IAM_USER:-$(pend iam_user)}"   # empty: the user was never created
+[ -n "$AWS_ACCOUNT_ID" ] && [ -n "$GROUP_NAME" ] || { echo "ERROR: set AWS_ACCOUNT_ID and GROUP_NAME (no AWS entry in $PENDING)."; exit 1; }
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
+[ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not $AWS_ACCOUNT_ID; nothing deleted."; exit 1; }
+RB_OK=1
+gone() { printf '%s' "$1" | grep -q NoSuchEntity; }
+if [ -n "$IAM_USER" ]; then
+  if OUT=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>&1); then
+    for k in $OUT; do aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k" || RB_OK=0; done
+    for g in $(aws iam list-groups-for-user --user-name "$IAM_USER" --query 'Groups[].GroupName' --output text); do
+      aws iam remove-user-from-group --group-name "$g" --user-name "$IAM_USER" || RB_OK=0
+    done
+    aws iam delete-user --user-name "$IAM_USER" || RB_OK=0
+  elif ! gone "$OUT"; then
+    RB_OK=0; echo "WARNING: could not list $IAM_USER's keys: $OUT"
+  fi
+fi
+if OUT=$(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --query 'AttachedPolicies[].PolicyArn' --output text 2>&1); then
+  for arn in $OUT; do aws iam detach-group-policy --group-name "$GROUP_NAME" --policy-arn "$arn" || RB_OK=0; done
+  for pol in $(aws iam list-group-policies --group-name "$GROUP_NAME" --query 'PolicyNames[]' --output text); do
+    aws iam delete-group-policy --group-name "$GROUP_NAME" --policy-name "$pol" || RB_OK=0
+  done
+  aws iam delete-group --group-name "$GROUP_NAME" || RB_OK=0
+elif ! gone "$OUT"; then
+  RB_OK=0; echo "WARNING: could not inspect group $GROUP_NAME: $OUT"
+fi
+if [ "$RB_OK" = 1 ]; then
+  rm -f credentials.json credentials_clean.json "$PENDING"; echo "Rollback complete."
+else
+  echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1
+fi
+```
 
 **For `.cloud-config.json`:** set `service_account` to `$GROUP_NAME` (the group) and add `"iam_user_prefix": "$USER_PREFIX"`, so later workflows derive the same names.
 
@@ -532,17 +586,28 @@ CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
 
 # Every step must succeed before the member's credential file goes: a failed
 # deletion leaves a live user or key, and the file is the repo's record of it.
-KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text) \
-  || { echo "ERROR: could not list $IAM_USER's access keys; nothing deleted."; exit 1; }
-for KEY_ID in $KEYS; do
-  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID" \
-    || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
-done
-# Remove from the configured group, then delete: delete-user fails while any
-# group membership remains.
-aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
-  && aws iam delete-user --user-name "$IAM_USER" \
-  || { echo "ERROR: could not remove or delete $IAM_USER; the credential file stays. Retry."; exit 1; }
+# Each step works from the user's current state, so a retry after a partial
+# run continues where it stopped; a user that no longer exists is done.
+if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>&1); then
+  for KEY_ID in $KEYS; do
+    aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID" \
+      || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
+  done
+  # delete-user fails while any group membership remains: remove the ones the
+  # user still has (none, if an earlier attempt already did)
+  GROUPS_NOW=$(aws iam list-groups-for-user --user-name "$IAM_USER" --query 'Groups[].GroupName' --output text) \
+    || { echo "ERROR: could not list $IAM_USER's groups; the credential file stays. Retry."; exit 1; }
+  for g in $GROUPS_NOW; do
+    aws iam remove-user-from-group --group-name "$g" --user-name "$IAM_USER" \
+      || { echo "ERROR: could not remove $IAM_USER from $g; the credential file stays. Retry."; exit 1; }
+  done
+  aws iam delete-user --user-name "$IAM_USER" \
+    || { echo "ERROR: could not delete $IAM_USER; the credential file stays. Retry."; exit 1; }
+elif printf '%s' "$KEYS" | grep -q NoSuchEntity; then
+  echo "$IAM_USER no longer exists."
+else
+  echo "ERROR: could not list $IAM_USER's access keys: $KEYS"; exit 1
+fi
 # All gone: now remove the member's credential file and any pending entries
 git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 # (deleting the user removed every key it had, including any recorded as unrevoked)

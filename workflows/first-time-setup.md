@@ -55,9 +55,10 @@ Using the bootstrap token and provider-specific commands from the reference file
    # during setup; the hooks' decrypted copies live in the system /tmp)
    /credentials.json
    /credentials_clean.json
+   /.cloud-setup-pending.json
    ```
-   If a run is interrupted after credentials were generated, delete `credentials.json` and run the provider rollback (step 2) before retrying.
-2. Create the service account/identity. From here on, if any later step fails (a role grant, key creation, encryption), undo what was created before retrying, so a live identity or key is not left behind and the collision checks do not block the retry: Azure has "Rollback a Failed Setup" in its reference; for GCP delete the service account (`gcloud iam service-accounts delete "$SA_EMAIL"` or the REST `DELETE`), for AWS remove the user's keys, the user, and the group.
+   If a run is interrupted, the next session finds what it left and recovers ("Recovering an Interrupted Run" in SKILL.md).
+2. Create the service account/identity with the reference's creation snippet, which first records the identity's names in `.cloud-setup-pending.json`. From here on, if any later step fails (a role grant, key creation, encryption), run "Rollback a Failed Setup" in the provider reference before retrying, so a live identity, key or role grant is not left behind and the collision checks do not block the retry. It reads the names from `.cloud-setup-pending.json`, so it works from a fresh shell.
 3. Grant ONLY the approved roles.
 4. Generate credentials (key file or access key pair).
 5. Encrypt the credentials **with the user's email in the filename**:
@@ -81,7 +82,7 @@ Using the bootstrap token and provider-specific commands from the reference file
      exit 1
    fi
    ```
-   If encryption fails, the snippet deletes the plaintext and stops; then undo the new identity as step 2 describes (GCP: delete the service account, which removes its keys; AWS: `rollback_aws_setup`; Azure: "Rollback a Failed Setup"), so no live, unusable credential is left behind.
+   If encryption fails, the snippet deletes the plaintext and stops; then run "Rollback a Failed Setup" for the provider (step 2), so no live, unusable credential is left behind.
 6. Save shared config (include `created_at` for credential age tracking):
    ```bash
    cat > .cloud-config.json << EOF
@@ -101,7 +102,7 @@ Using the bootstrap token and provider-specific commands from the reference file
    For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
 7. **Delete the plaintext credentials now** (only now: until this point its presence is what marks the setup as unfinished for the next session):
    ```bash
-   rm -f credentials.json
+   rm -f credentials.json .cloud-setup-pending.json
    ```
 8. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update (step 1a).
 
