@@ -197,12 +197,15 @@ sa_exists() {   # 0 = exists, 1 = absent (HTTP 404), 2 = could not tell
   esac
 }
 # It must not exist yet: anything found afterwards is then ours to remove
-sa_exists; case $? in
+# (if/else so the expected 404 does not stop a `set -e` shell)
+if sa_exists; then S=0; else S=$?; fi
+case $S in
   0) echo "ERROR: $SA_ID already exists; choose another accountId with the user."; exit 1 ;;
   2) echo "ERROR: could not check whether $SA_ID exists; nothing created."; exit 1 ;;
 esac
 RESP=$(umask 077 && mktemp)
-if curl -sS --fail -X POST \
+# (if/else so the status is captured even under `set -e`)
+if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -211,20 +214,24 @@ if curl -sS --fail -X POST \
     "serviceAccount": {
       "displayName": "Claude Code Agent"
     }
-  }' > "$RESP"; then RC=0; else RC=$?; fi
-if [ "$RC" -ne 0 ]; then
-  rm -f "$RESP"
-  # curl exit 22: Google rejected the request (409 = it already exists), so
-  # nothing was created. Any other failure is ambiguous: if the account now
-  # exists, this call made it, so delete it before stopping.
-  if [ "$RC" -ne 22 ] && sa_exists; then
-    curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
-      && echo "Removed $SA_ID, which the failed call had created." \
-      || echo "WARNING: could not delete $SA_ID; delete it by hand before retrying."
-  fi
-  echo "ERROR: service account creation failed (curl exit $RC); nothing is left to use."
-  exit 1
-fi
+  }'); then RC=0; else RC=$?; fi
+case "$RC:$HTTP" in
+  0:2??) ;;   # created
+  0:4??)      # Google rejected the request (409 = it already exists): nothing was created
+    rm -f "$RESP"
+    echo "ERROR: service account creation was rejected (HTTP $HTTP); nothing was created."
+    exit 1 ;;
+  *)          # a 5xx or a transport/local failure: the account may exist anyway.
+              # It did not exist before, so if it exists now, this call made it.
+    rm -f "$RESP"
+    if sa_exists; then
+      curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
+        && echo "Removed $SA_ID, which the failed call had created." \
+        || echo "WARNING: could not delete $SA_ID; delete it by hand before retrying."
+    fi
+    echo "ERROR: service account creation failed (curl exit $RC, HTTP ${HTTP:-none})."
+    exit 1 ;;
+esac
 SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
 [ -n "$SA_EMAIL" ] || { echo "ERROR: creation response has no service-account email."; exit 1; }
 echo "Created $SA_EMAIL; set SA_EMAIL to this in every later setup snippet."
@@ -302,33 +309,53 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 # Create Service Account printed, and a guess could name another account.
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
 
-# List the account's keys first: if the create call fails ambiguously (the key
-# may exist at Google even though no usable response arrived here), any key
-# that is new relative to this list is ours to revoke.
+# List the account's keys first, so a key an ambiguous failure may have left
+# behind can be found afterwards
 KEYS_URL="https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys"
-list_keys() { curl -sS --fail -G "$KEYS_URL" --data-urlencode "keyTypes=USER_MANAGED" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.keys[]?.name'; }
+list_keys() { local R; R=$(curl -sS --fail -G "$KEYS_URL" --data-urlencode "keyTypes=USER_MANAGED" \
+  -H "Authorization: Bearer $TOKEN") && printf '%s' "$R" | jq -r '.keys[]?.name'; }
 KEYS_BEFORE=$(list_keys) || { echo "ERROR: could not list the account's keys; nothing created."; exit 1; }
 
-# Fail on HTTP errors and validate the response before writing a key file, so
-# an error body is never decoded into credentials.json and encrypted.
+# Check the HTTP status and validate the response before writing a key file,
+# so an error body is never decoded into credentials.json and encrypted.
 RESP=$(umask 077 && mktemp)
 # (if/else so the status is captured even under `set -e`)
-if curl -sS --fail -X POST "$KEYS_URL" \
+if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST "$KEYS_URL" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; then RC=0; else RC=$?; fi
-if [ "$RC" -ne 0 ]; then
-  rm -f "$RESP"
-  # curl exit 22: Google rejected the request, so no key exists. Anything else
-  # (a local write error, a dropped connection) leaves the outcome unknown.
-  [ "$RC" -eq 22 ] && { echo "ERROR: key creation was rejected; no key was created."; exit 1; }
-  echo "ERROR: key creation outcome unknown (curl exit $RC); revoking any key it created."
-  for NAME in $(list_keys | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE")); do
-    CRED_ID="$NAME" TOKEN="$TOKEN" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
-  done
-  exit 1
-fi
+  -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}'); then RC=0; else RC=$?; fi
+case "$RC:$HTTP" in
+  0:2??) ;;   # created
+  0:4??)      # Google rejected the request: no key was created
+    rm -f "$RESP"; echo "ERROR: key creation was rejected (HTTP $HTTP); no key was created."; exit 1 ;;
+  *)          # a 5xx or a transport/local failure: a key may exist anyway
+    rm -f "$RESP"
+    # Its private key exists only in the response that never arrived, so nobody
+    # holds it and it grants no access. It still takes one of the account's 10
+    # key slots. GCP keys carry no owner label, so a key new since KEYS_BEFORE
+    # may instead be a teammate's concurrent onboarding: record the candidates
+    # for a person to check instead of deleting them.
+    echo "ERROR: key creation outcome unknown (curl exit $RC, HTTP ${HTTP:-none})."
+    AFTER=$(list_keys) || { echo "WARNING: could not list keys; compare them with the list before this call by hand."; exit 1; }
+    # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
+    NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE" | sed '/^$/d') || true)
+    if [ -n "$NEW" ] && [ ! -f .cloud-config.json ]; then
+      # First-time setup: no teammate can be onboarding yet, and the setup
+      # rollback deletes the service account with every key on it
+      echo "Run the setup rollback (delete $SA_EMAIL) before retrying."
+    elif [ -n "$NEW" ]; then
+      for NAME in $NEW; do
+        jq --arg id "$NAME" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \
+          '.unrevoked = ((.unrevoked // []) + [{provider: "gcp", id: $id, member: $m, ambiguous: true,
+             note: "may be an unused key from a failed create call, or a teammate'"'"'s key created at the same time", at: $t}])' \
+          .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+      done
+      echo "Keys created since the request began (recorded as ambiguous under \"unrevoked\"; commit .cloud-config.json):"
+      printf '  %s\n' $NEW
+      echo "Delete each one that is not a teammate's (not in any key_ids entry once their onboarding is committed)."
+    fi
+    exit 1 ;;
+esac
 # The key now exists at Google. Keep its resource name until the local file is
 # validated; on any local failure, delete the key so it is not left orphaned.
 KEY_NAME=$(jq -r '.name // empty' "$RESP")
@@ -388,7 +415,7 @@ curl -X GET \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` list names old keys a rotation could not delete yet; the snippet below deletes those too, since they are still live.
+Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` list names old keys a rotation could not delete yet; the snippet below deletes those too, since they are still live. It skips `unrevoked` entries marked `ambiguous` (keys that appeared while a create call failed): such a key may belong to a teammate who was onboarding at the same time, so compare it with every `key_ids` value, delete it by hand only if no member has it, then drop the entry.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -401,7 +428,7 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 # (revoke_pending), one an interrupted rotation saved (rotating), and any a
 # failed cleanup recorded as unrevoked
 IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
-  ([.unrevoked[]? | select(.provider == "gcp" and .member == $e) | .id | split("/") | last]) as $u
+  ([.unrevoked[]? | select(.provider == "gcp" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
   | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 [ -n "$IDS" ] || { echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1; }
@@ -456,10 +483,20 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
     echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
 (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
-  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
-gcloud auth activate-service-account --key-file="$ADC_KEY"
+  -pass stdin -in "$ENC_FILE" -out "$ADC_KEY") \
+  || { rm -f "$ADC_KEY"; echo "ERROR: could not decrypt $ENC_FILE."; exit 1; }
+gcloud auth activate-service-account --key-file="$ADC_KEY" \
+  || { rm -f "$ADC_KEY"; echo "ERROR: gcloud could not activate the key."; exit 1; }
 # Provider-aware project: in multi-provider repos project_id is in providers[].
-gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end)' .cloud-config.json)"
+# Stop (and log out) unless exactly the configured project is selected, as the
+# hook does: a previously selected project must not stay the default.
+PROJECT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
+if [ -z "$PROJECT_ID" ] || ! gcloud config set project "$PROJECT_ID" 2>/dev/null \
+   || [ "$(gcloud config get-value project 2>/dev/null)" != "$PROJECT_ID" ]; then
+  echo "ERROR: could not select GCP project '$PROJECT_ID'; logging out."
+  gcloud auth revoke "$(jq -r .client_email "$ADC_KEY")" 2>/dev/null || true
+  rm -f "$ADC_KEY"; exit 1
+fi
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
 # Persist for the rest of the session: snippets run in short-lived shells, and
 # Python clients in later commands need GOOGLE_APPLICATION_CREDENTIALS too

@@ -60,19 +60,29 @@ case "$PROVIDER" in
     # A full resource name needs nothing else; a bare ID needs the project and
     # service account (checked when the name was built above)
     case "$NAME" in projects/?*/serviceAccounts/?*/keys/?*) ;; *) NAME="" ;; esac
-    if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ] \
-       && curl -sS --fail -X DELETE "https://iam.googleapis.com/v1/$NAME" \
-            -H "Authorization: Bearer $TOKEN" >/dev/null; then
-      echo "Deleted GCP key ${NAME##*/}."; STATUS=0; REVOKED_ID="${NAME##*/}"
+    HTTP=000
+    if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ]; then
+      HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://iam.googleapis.com/v1/$NAME" \
+        -H "Authorization: Bearer $TOKEN")
+    fi
+    # 404: the key no longer exists (an earlier attempt deleted it), so it is gone
+    if [ "$HTTP" = 200 ] || [ "$HTTP" = 404 ]; then
+      echo "GCP key ${NAME##*/} is deleted."; STATUS=0; REVOKED_ID="${NAME##*/}"
     else
       record_unrevoked "${NAME:-unknown key of ${SA_EMAIL:-the service account}}" "new key for $USER_EMAIL"
     fi ;;
   aws)
     AK="${CRED_ID:-$(cred '.access_key_id // .AccessKey.AccessKeyId')}"
     # The key's owner, from AWS itself: correct even when no IAM name is known here
-    U=$( [ -n "$AK" ] && aws iam get-access-key-last-used --access-key-id "$AK" \
-           --query UserName --output text 2>/dev/null )
-    if [ -n "$U" ] && [ "$U" != "None" ]; then
+    U=""; LOOKUP=""
+    if [ -n "$AK" ]; then
+      if OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
+      then U="$OUT"; else LOOKUP="$OUT"; fi
+    fi
+    if [ -z "$U" ] && printf '%s' "$LOOKUP" | grep -q NoSuchEntity; then
+      # The key (or its user) no longer exists: an earlier attempt removed it
+      echo "AWS access key $AK no longer exists."; STATUS=0; REVOKED_ID="$AK"
+    elif [ -n "$U" ] && [ "$U" != "None" ]; then
       OK=1
       if [ "$MODE" = member ]; then
         for k in $(aws iam list-access-keys --user-name "$U" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
@@ -85,7 +95,7 @@ case "$PROVIDER" in
       else
         aws iam delete-access-key --user-name "$U" --access-key-id "$AK" || OK=0
       fi
-      if [ "$OK" = 1 ]; then echo "Revoked AWS access key $AK${MODE:+ ($MODE)}."; STATUS=0
+      if [ "$OK" = 1 ]; then echo "Revoked AWS access key $AK${MODE:+ ($MODE)}."; STATUS=0; REVOKED_ID="$AK"
       else record_unrevoked "$AK" "IAM user $U, mode $MODE"; fi
     else
       record_unrevoked "${AK:-unknown access key}" "owner could not be looked up"
@@ -113,20 +123,31 @@ case "$PROVIDER" in
         -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
         -d "{\"keyId\": \"$KID\"}")
     fi
-    if [ "$HTTP" = 204 ]; then echo "Removed Azure secret $KID."; STATUS=0; REVOKED_ID="$KID"
+    # Not 204: if the app no longer lists the secret, an earlier attempt removed it
+    if [ "$HTTP" != 204 ] && [ -n "$OBJECT_ID" ] && [ -n "$KID" ] \
+       && APP=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+                  -H "Authorization: Bearer $GRAPH_TOKEN") \
+       && printf '%s' "$APP" | jq -e --arg k "$KID" 'all(.passwordCredentials[]; .keyId != $k)' >/dev/null; then
+      HTTP=gone
+    fi
+    if [ "$HTTP" = 204 ] || [ "$HTTP" = gone ]; then echo "Azure secret $KID is removed."; STATUS=0; REVOKED_ID="$KID"
     else record_unrevoked "${KID:-secret labelled claude-code-$USER_EMAIL}" "app $APP_ID, HTTP $HTTP"; fi ;;
   *)
     echo "usage: discard-credential.sh gcp|aws|azure [key|member]"; exit 2 ;;
 esac
 
-# A revoked key or secret may already be recorded as this member's current one
-# (key_ids); drop that entry so the config never names a deleted credential
+# The deleted credential may still be recorded as this member's current one
+# (key_ids) or as an earlier failure (unrevoked); drop those records so the
+# config never names a deleted credential
 if [ "$STATUS" = 0 ] && [ -f "$CONFIG" ] && [ -n "${REVOKED_ID:-}" ]; then
   jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg id "$REVOKED_ID" '
     def clr: if .key_ids[$e] == $id then del(.key_ids[$e]) else . end;
-    if .providers then .providers |= map(if .provider == $p then clr else . end)
-    else (if .provider == $p then clr else . end) end' "$CONFIG" > "$CONFIG.tmp" \
-    && mv "$CONFIG.tmp" "$CONFIG"
+    .unrevoked = [(.unrevoked // [])[] | select(.provider != $p or (.id | split("/") | last) != $id)]
+    | if .unrevoked == [] then del(.unrevoked) else . end
+    | if .providers then .providers |= map(if .provider == $p then clr else . end)
+      else (if .provider == $p then clr else . end) end' "$CONFIG" > "$CONFIG.tmp" \
+    && mv "$CONFIG.tmp" "$CONFIG" \
+    || { rm -f "$CONFIG.tmp"; echo "WARNING: $REVOKED_ID is deleted, but $CONFIG could not be updated; remove any entry naming it by hand."; }
 fi
 
 rm -f "$CREDS" credentials_clean.json

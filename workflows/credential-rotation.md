@@ -146,16 +146,19 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    KEY="${KEY:-${!KVAR:-${CLOUD_CREDENTIALS_KEY:-}}}"
    [ -n "$KEY" ] || { echo "ERROR: no passphrase for $PROVIDER; set ${KVAR:-CLOUD_CREDENTIALS_KEY} and re-run this step."; exit 1; }
    # Encrypt to a private temp file in the same directory, prove it decrypts
-   # to the new key, and only then replace ENC_FILE in one rename. A failed or
-   # interrupted write never truncates the current credential; on failure the
-   # replacement is revoked and its plaintext deleted, so nothing is stranded.
+   # to the new key, and only then replace ENC_FILE in one rename. A failed
+   # write never truncates the current credential; on failure the replacement
+   # is revoked and its plaintext deleted, so nothing is stranded. On success
+   # credentials.json stays until step 8 has recorded the swap: if the run is
+   # interrupted in between (even in another shell), the next session finds it
+   # and recovers ("Recovering an Interrupted Run" in SKILL.md).
    TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX")
    if printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
         -in credentials.json -out "$TMP_ENC" \
       && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
         | cmp -s - credentials.json \
       && mv -f "$TMP_ENC" "$ENC_FILE"; then
-     rm -f credentials.json
+     echo "Encrypted to $ENC_FILE; continue with steps 7 and 8."
    else
      rm -f "$TMP_ENC"
      echo "ERROR: re-encryption failed; $ENC_FILE is unchanged. Revoking the replacement; retry the rotation from step 4."
@@ -188,6 +191,15 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    if [ "$PROVIDER" != aws ] && [ -z "$NEW_KEY_ID" ]; then
      echo "ERROR: could not read the new key ID from $ENC_FILE; nothing recorded."; exit 1
    fi
+   # A rerun after this step already succeeded (before the commit): rotating is
+   # gone and the old ID is queued (or, GCP/Azure, key_ids names the new key)
+   if [ -z "${OLD_KEY_ID:-}" ] && [ -z "$(pcfg '.rotating[$e]')" ] \
+      && { [ -n "$(pcfg '(.revoke_pending[$e] // []) | if type == "string" then . else .[] end')" ] \
+           || { [ "$PROVIDER" != aws ] && [ "$(pcfg '.key_ids[$e]')" = "$NEW_KEY_ID" ]; }; }; then
+     rm -f credentials.json
+     echo "The swap is already recorded; commit $ENC_FILE and .cloud-config.json, then continue with step 9."
+     exit 0
+   fi
    OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.rotating[$e]')}"
    [ "$PROVIDER" != aws ] && OLD_KEY_ID="${OLD_KEY_ID:-$(pcfg '.key_ids[$e]')}"
    [ -n "$(pcfg '.revoked_early[$e]')" ] && OLD_KEY_REVOKED=1
@@ -204,7 +216,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        | del(.rotating[$e]) | del(.revoked_early[$e])
        | if $old != "" then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [$old] | unique) else . end;
      if .providers then .providers |= map(if .provider == $p then upd else . end) else upd end' \
-     .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+     .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+     || { echo "ERROR: could not update .cloud-config.json; credentials.json is kept, re-run this step."; exit 1; }
+   # Everything is recorded: the plaintext can go
+   rm -f credentials.json
    ```
    Commit the updated encrypted credentials file together with `.cloud-config.json`.
 9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list, plus `OLD_KEY_ID` if this shell has it, and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).

@@ -240,6 +240,8 @@ cleanup_failed_setup() {
   rm -f credentials.json
 }
 trap 'cleanup_failed_setup' ERR
+# A signal is not a failed command, so ERR would not fire: roll back on those too
+trap 'cleanup_failed_setup; exit 1' INT TERM HUP
 
 # Step 1: Create application (same sanitized, per-run name as the CLI path above)
 # Name: a sanitized repo slug (letters, digits, '-') plus a random per-run
@@ -286,7 +288,7 @@ SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
   --arg keyId "$SECRET_KEY_ID" \
   '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
 
-trap - ERR
+trap - ERR INT TERM HUP
 echo "Created application $SP_NAME (object id $APP_OBJECT_ID). Keep APP_OBJECT_ID until setup finishes."
 ```
 
@@ -424,24 +426,40 @@ USER_EMAIL=$(git config user.email)
 # temp dir outside the repo, removed on any exit, including an interruption
 RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
 
-# Add a new client secret labeled with the user's email. curl exit 22 means
-# Graph rejected the request (no secret was created); any other failure, or a
-# response we cannot read, leaves the outcome unknown, so revoke whatever this
-# call may have created (the newest secret with this label) before stopping.
+# Add a new client secret labeled with the user's email. An HTTP 4xx means
+# Graph rejected the request (no secret was created); a 5xx, a transport or
+# local failure, or a response we cannot read leaves the outcome unknown. The
+# secrets listed before the call tell which secret, if any, the call created
+# (the user's current secret carries the same label, so "newest with the
+# label" is not enough), and only that one is removed.
+list_secret_ids() { local R; R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  -H "Authorization: Bearer $GRAPH_TOKEN") && printf '%s' "$R" \
+  | jq -r --arg n "claude-code-$USER_EMAIL" '.passwordCredentials[] | select(.displayName == $n) | .keyId'; }
+SECRETS_BEFORE=$(list_secret_ids) || { echo "ERROR: could not list the app's secrets; nothing created."; exit 1; }
 discard_unknown_secret() {
   echo "ERROR: $1; revoking any secret this call created."
-  OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
-    bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+  AFTER=$(list_secret_ids) \
+    || { echo "WARNING: could not list secrets; check for a new claude-code-$USER_EMAIL secret by hand."; exit 1; }
+  # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
+  NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$SECRETS_BEFORE" | sed '/^$/d') || true)
+  [ -n "$NEW" ] || { echo "No new secret exists; nothing to revoke."; exit 1; }
+  for K in $NEW; do
+    CRED_ID="$K" OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+      bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+  done
   exit 1
 }
 # (if/else so the status is captured even under `set -e`)
-if (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
+if HTTP=$(umask 077 && curl -sS -o "$RESP_DIR/secret.json" -w '%{http_code}' -X POST \
+  "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
-  > "$RESP_DIR/secret.json"); then RC=0; else RC=$?; fi
-[ "$RC" -ne 22 ] || { echo "ERROR: Graph rejected addPassword; no secret was created."; exit 1; }
-[ "$RC" -eq 0 ] || discard_unknown_secret "addPassword outcome unknown (curl exit $RC)"
+  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}"); then RC=0; else RC=$?; fi
+case "$RC:$HTTP" in
+  0:2??) ;;
+  0:4??) echo "ERROR: Graph rejected addPassword (HTTP $HTTP); no secret was created."; exit 1 ;;
+  *) discard_unknown_secret "addPassword outcome unknown (curl exit $RC, HTTP ${HTTP:-none})" ;;
+esac
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 # Keep the new secret's keyId: removePassword needs it if a later step fails
 NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
@@ -461,10 +479,16 @@ echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
 
 # Record which secret is this member's (not secret), so offboarding can find
 # it without the member's passphrase; commit .cloud-config.json with the .enc
-jq --arg e "$USER_EMAIL" --arg k "$NEW_SECRET_KEY_ID" '
+if ! { jq --arg e "$USER_EMAIL" --arg k "$NEW_SECRET_KEY_ID" '
   if .providers then .providers |= map(if .provider == "azure" then .key_ids[$e] = $k else . end)
   else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \
-  && mv .cloud-config.json.tmp .cloud-config.json
+  && mv .cloud-config.json.tmp .cloud-config.json; }; then
+  rm -f .cloud-config.json.tmp
+  echo "ERROR: could not record the secret in .cloud-config.json; revoking it."
+  CRED_ID="$NEW_SECRET_KEY_ID" OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+    bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+  exit 1
+fi
 ```
 
 **Note:** The `.cloud-config.json` for Azure should also store `tenant` alongside the other fields.
@@ -484,11 +508,16 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a team member's secrets (if they leave), with `OBJECT_ID` resolved as above. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. Members added before `key_ids` existed have no entry: list the secrets above, find theirs by the `claude-code-<email>` label, and set `KEY_ID` to it.
+Remove a team member's secrets (if they leave); the block resolves the application itself. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. Members added before `key_ids` existed have no entry: list the secrets above, find theirs by the `claude-code-<email>` label, and set `KEY_ID` to it.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
-[ -n "$OBJECT_ID" ] || { echo "ERROR: resolve OBJECT_ID first."; exit 1; }
+# Resolve the application here too: this block may run in a fresh shell
+APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json)
+OBJECT_ID=$( [ -n "$APP_ID" ] && curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+  --data-urlencode "\$filter=appId eq '$APP_ID'" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+[ -n "$OBJECT_ID" ] || { echo "ERROR: could not resolve the application for appId '$APP_ID'."; exit 1; }
 # Every recorded credential of this member: current (key_ids), queued old ones
 # (revoke_pending), one an interrupted rotation saved (rotating), and any a
 # failed cleanup recorded as unrevoked

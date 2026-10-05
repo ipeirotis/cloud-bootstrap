@@ -522,6 +522,14 @@ USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent
 MEMBER_EMAIL="departed-user@example.com"
 IAM_USER=$(iam_user_name "$MEMBER_EMAIL" "$USER_PREFIX")
 
+# Delete nothing unless the bootstrap credentials belong to this repo's
+# account: a same-named user in another account is not this member
+AWS_ACCOUNT_ID=$(aws_cfg project_id)
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
+[ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing deleted."; exit 1; }
+
 # Every step must succeed before the member's credential file goes: a failed
 # deletion leaves a live user or key, and the file is the repo's record of it.
 KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text) \
@@ -537,9 +545,12 @@ aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER
   || { echo "ERROR: could not remove or delete $IAM_USER; the credential file stays. Retry."; exit 1; }
 # All gone: now remove the member's credential file and any pending entries
 git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+# (deleting the user removed every key it had, including any recorded as unrevoked)
 jq --arg e "$MEMBER_EMAIL" '
   def clr: del(.revoke_pending[$e]) | del(.rotating[$e]);
-  if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
+  .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .member != $e)]
+  | if .unrevoked == [] then del(.unrevoked) else . end
+  | if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
   .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
 ```
 

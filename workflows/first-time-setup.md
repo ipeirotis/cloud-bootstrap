@@ -63,10 +63,20 @@ Using the bootstrap token and provider-specific commands from the reference file
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
-   if ! printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-        -pass stdin \
-        -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"; then
-     rm -f ".cloud-credentials.${USER_EMAIL}.enc" credentials.json
+   ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
+   # Encrypt to a private temp file, prove it decrypts to the credential, and
+   # only then move it into place in one rename, so a truncated file never
+   # appears under the final name. credentials.json stays until step 7: if this
+   # run is interrupted anywhere before then, the next session finds it and
+   # recovers ("Recovering an Interrupted Run" in SKILL.md).
+   TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX") \
+     || { echo "ERROR: could not create a temp file. Run the provider's setup rollback now (step 2)."; exit 1; }
+   if ! { printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
+            -in credentials.json -out "$TMP_ENC" \
+          && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
+            | cmp -s - credentials.json \
+          && mv -f "$TMP_ENC" "$ENC_FILE"; }; then
+     rm -f "$TMP_ENC" "$ENC_FILE" credentials.json
      echo "ERROR: encryption failed. Run the provider's setup rollback now (step 2), then retry setup."
      exit 1
    fi
@@ -89,7 +99,7 @@ Using the bootstrap token and provider-specific commands from the reference file
    EOF
    ```
    For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
-7. **Delete the plaintext credentials immediately:**
+7. **Delete the plaintext credentials now** (only now: until this point its presence is what marks the setup as unfinished for the next session):
    ```bash
    rm -f credentials.json
    ```
