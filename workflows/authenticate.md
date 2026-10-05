@@ -20,6 +20,7 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
        ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
        if [ -f "$ENC_FILE" ]; then
          # Resolve key and run steps 7-9 for this provider, then continue loop
+         :
        fi
      done
    else
