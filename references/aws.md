@@ -4,6 +4,7 @@
 
 The user's AWS account needs **IAM full access** or at minimum:
 - `iam:CreateGroup`, `iam:CreateUser`, `iam:AddUserToGroup`
+- `iam:GetGroup`, `iam:GetUser` (the collision checks before creating, and confirming a failed create left nothing)
 - `iam:CreateAccessKey`
 - `iam:AttachGroupPolicy` / `iam:PutGroupPolicy`
 - for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:ListGroupsForUser`, `iam:ListAttachedGroupPolicies`, `iam:ListGroupPolicies`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
@@ -13,6 +14,7 @@ The user's AWS account needs **IAM full access** or at minimum:
 
 The user's AWS account needs:
 - `iam:CreateUser`, `iam:AddUserToGroup`
+- `iam:GetUser` (confirming a failed `create-user` left nothing)
 - `iam:CreateAccessKey`
 - for rolling back a failed run: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:GetAccessKeyLastUsed`, `iam:ListGroupsForUser`
 

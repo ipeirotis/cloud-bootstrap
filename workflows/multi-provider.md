@@ -110,6 +110,13 @@ trap 'rm -f /tmp/credentials.json
       [ "${GCP_CONFIGURED:-}" != 1 ] || [ "${GCP_OK:-}" = 1 ] || clear_prior_gcp
       [ "${AWS_CONFIGURED:-}" != 1 ] || [ "${AWS_OK:-}" = 1 ] || clear_prior_aws
       [ "${AZ_CONFIGURED:-}" != 1 ] || [ "${AZ_OK:-}" = 1 ] || clear_prior_az' EXIT
+# A provider removed from the config since an earlier activation in this
+# container still needs its cleanup: count it as configured whenever that
+# activation left something behind (the ADC key, persisted AWS key exports,
+# a cached az service-principal login)
+[ -f /tmp/gcp-adc-credentials.json ] && GCP_CONFIGURED=1
+[ -n "${CLAUDE_ENV_FILE:-}" ] && grep -q '^export AWS_ACCESS_KEY_ID=' "$CLAUDE_ENV_FILE" 2>/dev/null && AWS_CONFIGURED=1
+command -v az >/dev/null 2>&1 && [ "$(az account show --query user.type -o tsv 2>/dev/null)" = servicePrincipal ] && AZ_CONFIGURED=1
 
 # Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
 # the activated service account. Clear it for the session whenever GCP may be

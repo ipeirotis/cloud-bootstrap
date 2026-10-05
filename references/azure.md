@@ -428,7 +428,7 @@ else
 fi
 ```
 
-With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)"` first (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`, then delete `.cloud-setup-pending.json`.
+With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)" --subscription "$SUBSCRIPTION_ID" --yes` first (the subscription setup granted roles in, from `.cloud-setup-pending.json`, not the CLI's current default) (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`, then delete `.cloud-setup-pending.json`.
 
 ## Grant Roles
 

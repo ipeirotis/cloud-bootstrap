@@ -131,12 +131,18 @@ DEST=.claude/skills/cloud-bootstrap
 # so a failed download never leaves a mix of old and new files
 FILES=$(curl -fsSL "$BASE/MANIFEST" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$') \
   || { echo "ERROR: could not download MANIFEST"; exit 1; }
-STAGE=$(mktemp -d)
+STAGE=$(mktemp -d) && [ -n "$STAGE" ] && [ -d "$STAGE" ] \
+  || { echo "ERROR: could not create a staging directory; nothing changed."; exit 1; }
+trap 'rm -rf "$STAGE"' EXIT
 for FILE in $FILES; do
   mkdir -p "$STAGE/$(dirname "$FILE")"
   curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
 done
-mkdir -p "$DEST" && cp -R "$STAGE"/. "$DEST"/ && rm -rf "$STAGE"
+mkdir -p "$DEST" && cp -R "$STAGE"/. "$DEST"/ \
+  || { echo "ERROR: could not copy into $DEST."; exit 1; }
+# Record what was installed, as install.sh does, so update.sh can later remove
+# files a newer release drops
+printf '%s\n' $FILES > "$DEST/.installed-files"
 
 git add "$DEST"
 git commit -m "Add cloud-bootstrap skill"
