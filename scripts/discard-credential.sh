@@ -84,7 +84,22 @@ case "$PROVIDER" in
       record_unrevoked "${AK:-unknown access key}" "bootstrap credentials are for account ${CALLER:-unknown}, expected ${ACCOUNT:-none configured}"
       exit 1
     fi
-    # The key's owner, from AWS itself: correct even when no IAM name is known here
+    # The only user whose keys this script may delete: this member's, as the
+    # setup record names it or as references/aws.md ("IAM Names") derives it
+    # from the email. A stale credentials.json or a mistyped CRED_ID can name a
+    # live key of a teammate, which must never be deleted here.
+    PEND() { jq -r --arg k "$1" 'select(.provider == "aws") | .[$k] // empty' .cloud-setup-pending.json 2>/dev/null; }
+    PREFIX="$(cfg iam_user_prefix)"; PREFIX="${PREFIX:-$(PEND user_prefix)}"; PREFIX="${PREFIX:-claude-agent}"
+    H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
+    if [ "$PREFIX" = "claude-agent" ]; then
+      N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+    else
+      N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+      [ "$N" = "$PREFIX-$USER_EMAIL" ] || N="${N:0:55}-$H"
+    fi
+    [ ${#N} -le 64 ] || N="${N:0:55}-$H"
+    PEND_USER="$(PEND iam_user)"; N="${PEND_USER:-$N}"
+    # The key's owner, from AWS itself
     U=""; LOOKUP=""
     if [ -n "$AK" ]; then
       if OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
@@ -94,15 +109,6 @@ case "$PROVIDER" in
       # was saved). Step 3 recorded the current key in rotating; every other
       # key of this member's user that the config does not name is the lost
       # replacement, which nobody holds.
-      PREFIX="$(cfg iam_user_prefix)"; PREFIX="${PREFIX:-claude-agent}"
-      H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
-      if [ "$PREFIX" = "claude-agent" ]; then
-        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
-      else
-        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
-        [ "$N" = "$PREFIX-$USER_EMAIL" ] || N="${N:0:55}-$H"
-      fi
-      [ ${#N} -le 64 ] || N="${N:0:55}-$H"
       KNOWN=$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider == "aws")) else . end)
         | [.rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]' "$CONFIG")
       if KEYS=$(aws iam list-access-keys --user-name "$N" --query 'AccessKeyMetadata[].AccessKeyId' --output text); then
@@ -132,21 +138,15 @@ case "$PROVIDER" in
       # the new member's user is the repo-scoped name for this email, as
       # references/aws.md derives it. A credentials.json exists only once that
       # user was created by this run, so it is this run's user.
-      PREFIX="$(cfg iam_user_prefix)"; PREFIX="${PREFIX:-claude-agent}"
-      H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
-      if [ "$PREFIX" = "claude-agent" ]; then
-        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
-      else
-        N="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
-        [ "$N" = "$PREFIX-$USER_EMAIL" ] || N="${N:0:55}-$H"
-      fi
-      [ ${#N} -le 64 ] || N="${N:0:55}-$H"
       if OUT=$(aws iam get-user --user-name "$N" --query User.UserName --output text 2>&1)
       then U="$OUT"; AK="(all keys of $N)"; else LOOKUP="$OUT"; AK="(user $N)"; fi
     fi
     if [ -z "$U" ] && printf '%s' "$LOOKUP" | grep -q NoSuchEntity; then
       # The key (or its user) no longer exists: an earlier attempt removed it
       echo "AWS access key $AK no longer exists."; STATUS=0; REVOKED_ID="$AK"
+    elif [ -n "$U" ] && [ "$U" != "None" ] && [ "$U" != "$N" ]; then
+      echo "ERROR: access key $AK belongs to IAM user $U, not this member's user $N; nothing deleted."
+      echo "credentials.json or CRED_ID names someone else's key: find this run's new key of $N and revoke it by hand."
     elif [ -n "$U" ] && [ "$U" != "None" ]; then
       OK=1
       if [ "$MODE" = member ]; then

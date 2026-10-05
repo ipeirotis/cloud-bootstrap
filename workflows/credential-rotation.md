@@ -229,20 +229,23 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      || { echo "ERROR: could not update .cloud-config.json; credentials.json is kept, re-run this step."; exit 1; }
    ```
    Commit the updated encrypted credentials file together with `.cloud-config.json`, and only then delete the plaintext (`rm -f credentials.json`): until the commit, it is what lets an interrupted run be finished.
-9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list, plus `OLD_KEY_ID` if this shell has it, and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
+9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list (step 8 queued the old key there) and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
    ```bash
    USER_EMAIL=$(git config user.email)
    # PROVIDER: the provider being rotated (required in multi-provider configs)
    PROVIDER="${PROVIDER:-$(jq -r '.provider // empty' .cloud-config.json)}"
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
    pcfg() { jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider == \$p)) else . end) | $1 // empty" .cloud-config.json; }
-   IDS="$(pcfg '((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]') ${OLD_KEY_ID:-}"
+   # Only queued IDs (and, with COMPROMISE, the key saved in step 3): never a
+   # shell's OLD_KEY_ID, which before step 8 is the current, working key (step 4
+   # runs this step early to free AWS key slots)
+   IDS="$(pcfg '((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) | .[]')"
    if [ "${COMPROMISE:-}" = 1 ]; then
      IDS="$IDS $(pcfg '.rotating[$e]')"
      [ "$PROVIDER" != aws ] && IDS="$IDS $(pcfg '.key_ids[$e]')"
    fi
    IDS=$(printf '%s\n' $IDS | sort -u)
-   [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no OLD_KEY_ID, no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }
+   [ -n "$IDS" ] || { echo "ERROR: nothing to revoke (no revoke_pending entry; before step 4 set COMPROMISE=1)."; exit 1; }
    case "$PROVIDER" in
      aws)
        # A key lookup in the wrong account reports NoSuchEntity, which would
@@ -318,7 +321,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -z "$UNRECORDED" ] || echo "ERROR: revoked, but .cloud-config.json could not be updated for:$UNRECORDED. Remove them from revoke_pending by hand (a retry also clears them: a missing key counts as gone)."
    [ -z "$FAILED" ] || echo "ERROR: still active, kept in config for a retry with fresh bootstrap credentials:$FAILED"
    [ -z "$FAILED$UNRECORDED" ] || exit 1
-   # All gone: make sure a later step 8 (compromise path) queues nothing
-   unset OLD_KEY_ID COMPROMISE; OLD_KEY_REVOKED=1
+   # Compromise path: the old key is gone, so a later step 8 in this shell
+   # queues nothing. Not when step 4 ran this early to free AWS key slots:
+   # the current key is still live and step 8 must queue it
+   if [ "${COMPROMISE:-}" = 1 ]; then unset OLD_KEY_ID; OLD_KEY_REVOKED=1; fi
+   unset COMPROMISE
    ```
    Commit `.cloud-config.json`.
