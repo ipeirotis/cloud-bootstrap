@@ -205,6 +205,7 @@ if ! curl -sS --fail -X POST \
 fi
 SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
 [ -n "$SA_EMAIL" ] || { echo "ERROR: creation response has no service-account email."; exit 1; }
+echo "Created $SA_EMAIL; set SA_EMAIL to this in every later setup snippet."
 ```
 
 `SA_EMAIL` (normally `claude-agent@$PROJECT_ID.iam.gserviceaccount.com`, or `$SA_ID@...` if the user chose another id) is the identity every later step binds to: grant roles to it, create its key, and record it as `service_account` in `.cloud-config.json`.
@@ -275,7 +276,9 @@ This command works for both first-time setup and adding new team members. Each c
 # so PROJECT_ID must be resolved here too, not assumed.
 PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
+# No fallback to a guessed name: during first-time setup this is the SA_EMAIL
+# Create Service Account printed, and a guess could name another account.
+[ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
 
 # Fail on HTTP errors and validate the response before writing a key file, so
 # an error body is never decoded into credentials.json and encrypted.
@@ -330,7 +333,9 @@ configured service account first (do not hard-code `claude-agent`):
 ```bash
 PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
+# No fallback to a guessed name: during first-time setup this is the SA_EMAIL
+# Create Service Account printed, and a guess could name another account.
+[ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
 curl -X GET \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN"

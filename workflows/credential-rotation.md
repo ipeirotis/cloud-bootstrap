@@ -16,7 +16,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 > continue with steps 4–8.
 
 3. **Record the OLD key identifier first**, before creating or overwriting anything. The old key id often lives only in the current credential material, so capture it now or it becomes unrecoverable once the `.enc` is replaced:
-   - **GCP:** decrypt the existing `ENC_FILE` and read `OLD_KEY_ID=$(... | jq -r .private_key_id)` (or list keys via "Key Management" and note the current one).
+   - **GCP:** the member's `key_ids` entry in `.cloud-config.json` already holds it, committed, so it survives fresh shells until step 8 replaces it. For setups without that entry, decrypt the existing `ENC_FILE` and read `OLD_KEY_ID=$(... | jq -r .private_key_id)` (or list keys via "Key Management" and note the current one), and keep it in the same shell through step 8.
    - **AWS:** `OLD_KEY_ID` is the existing `access_key_id` (decrypt the current `ENC_FILE` to read it). Also derive the user it belongs to now, since the compromise path revokes before step 4 runs (helpers from aws.md "IAM Names"):
      ```bash
      USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
@@ -137,13 +137,19 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```
    **Note:** `PROVIDER` is derived in step 1 when reading `.cloud-config.json`. In single-provider mode it comes from the top-level `provider` field; in multi-provider mode it is the specific provider whose credentials are being rotated.
 7. **Do not reset the shared top-level `created_at`** in `.cloud-config.json` — that field is repo-wide, so bumping it makes every other team member's still-old `.cloud-credentials.*.enc` look freshly rotated and suppresses their 180-day age warning. Credential age is tracked **per file** via each `.enc` file's git commit time (the Authenticate age check uses that), so committing the rotated file in the next step updates only this user's age. (If you maintain optional per-file age metadata, update only this credential's entry — never the shared timestamp.)
-8. **GCP:** point this member's `key_ids` entry at `NEW_KEY_ID`, and record `OLD_KEY_ID` under `revoke_pending` until step 9 confirms it is gone, so a failed revoke never loses the only record of a live key. (In the compromise path step 9 already revoked it: `unset OLD_KEY_ID` first.)
+8. **GCP:** point this member's `key_ids` entry at `NEW_KEY_ID`, and move the old ID into `revoke_pending` until step 9 confirms it is gone, so a failed revoke never loses the only record of a live key. The old ID comes from this shell or, in a fresh one, from the `key_ids` entry being replaced. (In the compromise path step 9 already revoked the old key and cleared that entry, so nothing is pending.)
    ```bash
    USER_EMAIL=$(git config user.email)
    # In a fresh shell, read the new key's ID back from the re-encrypted file
    # (ENC_FILE from step 6, KEY from step 2)
    NEW_KEY_ID="${NEW_KEY_ID:-$(echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null | jq -r '.private_key_id // empty')}"
    [ -n "$NEW_KEY_ID" ] || { echo "ERROR: could not determine the new key ID; nothing recorded."; exit 1; }
+   gcpcfg() { jq -r --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider==\"gcp\")) else . end) | $1 // empty" .cloud-config.json; }
+   OLD_KEY_ID="${OLD_KEY_ID:-$(gcpcfg '.key_ids[$e]')}"
+   [ "$OLD_KEY_ID" = "$NEW_KEY_ID" ] && OLD_KEY_ID=""   # step 8 already ran
+   if [ -z "$OLD_KEY_ID" ] && [ -z "$(gcpcfg '.revoke_pending[$e]')" ] && [ "${OLD_KEY_REVOKED:-}" != 1 ]; then
+     echo "WARNING: no old key ID known. Unless the old key was already revoked (compromise path), list keys (Key Management), set OLD_KEY_ID, and re-run this step."
+   fi
    jq --arg e "$USER_EMAIL" --arg new "$NEW_KEY_ID" --arg old "${OLD_KEY_ID:-}" '
      def upd: .key_ids[$e] = $new | if $old != "" then .revoke_pending[$e] = $old else . end;
      if .providers then .providers |= map(if .provider == "gcp" then upd else . end) else upd end' \
@@ -151,7 +157,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    ```
    Commit the updated encrypted credentials file (and, for GCP, `.cloud-config.json`).
 9. **Now revoke the OLD key on the provider side** using the `OLD_KEY_ID` captured in step 3 (only after the replacement is verified and committed):
-   - **GCP:** delete the old key, failing on any HTTP error so a rejected delete is not mistaken for a revoked key, and clear its `revoke_pending` entry only once Google confirms. From a fresh shell, the ID comes from that entry:
+   - **GCP:** delete the old key, failing on any HTTP error so a rejected delete is not mistaken for a revoked key, and clear its record only once Google confirms. From a fresh shell after step 8, the ID comes from `revoke_pending`. In the compromise path (before step 4) set `OLD_KEY_ID` from step 3, i.e. the member's current `key_ids` entry; never take it from `key_ids` after step 8, which then names the new key.
      ```bash
      # Re-resolve everything from config: this may run in a fresh shell
      PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
@@ -164,9 +170,12 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$OLD_KEY_ID" \
        -H "Authorization: Bearer $TOKEN" \
        || { echo "ERROR: old key $OLD_KEY_ID is still active and stays in revoke_pending; retry with a fresh token."; exit 1; }
-     jq --arg e "$USER_EMAIL" '
-       if .providers then .providers |= map(if .provider == "gcp" then del(.revoke_pending[$e]) else . end)
-       else del(.revoke_pending[$e]) end' .cloud-config.json > .cloud-config.json.tmp \
+     # Clear the pending entry, and the key_ids entry too if it still names the
+     # revoked key (compromise path, before the replacement exists)
+     jq --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
+       def clr: del(.revoke_pending[$e]) | if .key_ids[$e] == $old then del(.key_ids[$e]) else . end;
+       if .providers then .providers |= map(if .provider == "gcp" then clr else . end)
+       else clr end' .cloud-config.json > .cloud-config.json.tmp \
        && mv .cloud-config.json.tmp .cloud-config.json
      ```
      Commit `.cloud-config.json`.
