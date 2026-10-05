@@ -151,6 +151,12 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         fi
         export PATH="/home/user/google-cloud-sdk/bin:$PATH"
       fi
+      # Only a key for the configured service account (not a stale or copied one)
+      SA_CFG=$(jq -r ".providers[$i].service_account // empty" "$CONFIG")
+      if [ -z "$SA_CFG" ] || [ "$(jq -r '.client_email // empty' /tmp/credentials.json)" != "$SA_CFG" ]; then
+        echo "WARNING: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}; skipping GCP."
+        rm -f /tmp/credentials.json; continue
+      fi
       if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
         echo "WARNING: gcloud auth failed — skipping GCP."
         rm -f /tmp/credentials.json; continue

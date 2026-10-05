@@ -120,6 +120,15 @@ if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   exit 0
 fi
 
+# Use the key only if it is for the configured service account: a stale or
+# copied file could hold a valid key for another account in the same project
+SA_CFG=$(jq -r '.service_account // empty' "$CONFIG" 2>/dev/null)
+if [ -z "$SA_CFG" ] || [ "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)" != "$SA_CFG" ]; then
+  echo "WARNING: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}; not activating it."
+  rm -f "$ADC_KEY"
+  exit 0
+fi
+
 if ! gcloud auth activate-service-account --key-file="$ADC_KEY" 2>/dev/null; then
   echo "WARNING: gcloud auth failed — credentials may be revoked."
   rm -f "$ADC_KEY"
@@ -574,6 +583,9 @@ fi
 (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY") \
   || { rm -f "$ADC_KEY"; echo "ERROR: could not decrypt $ENC_FILE."; exit 1; }
+SA_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
+[ -n "$SA_CFG" ] && [ "$(jq -r '.client_email // empty' "$ADC_KEY")" = "$SA_CFG" ] \
+  || { rm -f "$ADC_KEY"; echo "ERROR: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}."; exit 1; }
 gcloud auth activate-service-account --key-file="$ADC_KEY" \
   || { rm -f "$ADC_KEY"; echo "ERROR: gcloud could not activate the key."; exit 1; }
 # Provider-aware project: in multi-provider repos project_id is in providers[].
