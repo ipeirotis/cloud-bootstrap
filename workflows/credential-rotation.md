@@ -137,6 +137,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 8. **GCP:** point this member's `key_ids` entry at `NEW_KEY_ID`, and record `OLD_KEY_ID` under `revoke_pending` until step 9 confirms it is gone, so a failed revoke never loses the only record of a live key. (In the compromise path step 9 already revoked it: `unset OLD_KEY_ID` first.)
    ```bash
    USER_EMAIL=$(git config user.email)
+   # In a fresh shell, read the new key's ID back from the re-encrypted file
+   # (ENC_FILE from step 6, KEY from step 2)
+   NEW_KEY_ID="${NEW_KEY_ID:-$(echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null | jq -r '.private_key_id // empty')}"
+   [ -n "$NEW_KEY_ID" ] || { echo "ERROR: could not determine the new key ID; nothing recorded."; exit 1; }
    jq --arg e "$USER_EMAIL" --arg new "$NEW_KEY_ID" --arg old "${OLD_KEY_ID:-}" '
      def upd: .key_ids[$e] = $new | if $old != "" then .revoke_pending[$e] = $old else . end;
      if .providers then .providers |= map(if .provider == "gcp" then upd else . end) else upd end' \

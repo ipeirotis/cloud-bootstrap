@@ -300,8 +300,22 @@ KEY_ID=$(jq -r .private_key_id credentials.json)
 A service-account key carries no member label, and its ID is otherwise stored only inside that member's encrypted file. Record which member owns which key in `.cloud-config.json` (the ID is not secret), so the key can be found and deleted when the member leaves even if their passphrase is gone. Run this once `.cloud-config.json` exists (during first-time setup, right after writing it) and commit the config with the `.enc` file:
 
 ```bash
-# Provider-aware: in multi-provider configs the map lives in the gcp entry
+# Provider-aware: in multi-provider configs the map lives in the gcp entry.
+# Snippets may run in fresh shells: take KEY_ID from this shell, else from
+# credentials.json, else from the member's encrypted file (KEY from SKILL.md).
 USER_EMAIL=$(git config user.email)
+if [ -z "$KEY_ID" ] && [ -f credentials.json ]; then
+  KEY_ID=$(jq -r '.private_key_id // empty' credentials.json)
+fi
+if [ -z "$KEY_ID" ]; then
+  for f in ".cloud-credentials.gcp.${USER_EMAIL}.enc" ".cloud-credentials.${USER_EMAIL}.enc"; do
+    [ -f "$f" ] || continue
+    KEY_ID=$(echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$f" 2>/dev/null \
+      | jq -r '.private_key_id // empty')
+    [ -n "$KEY_ID" ] && break
+  done
+fi
+[ -n "$KEY_ID" ] || { echo "ERROR: could not determine this member's key ID; nothing recorded."; exit 1; }
 jq --arg e "$USER_EMAIL" --arg k "$KEY_ID" '
   if .providers then .providers |= map(if .provider == "gcp" then .key_ids[$e] = $k else . end)
   else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \

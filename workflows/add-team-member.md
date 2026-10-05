@@ -53,11 +53,11 @@ Using the bootstrap token and provider-specific commands:
      -in credentials.json -out "$ENC_FILE"
    ```
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
-4. **Delete the plaintext credentials immediately:**
+4. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves. Run it before the next step: it reads the ID from `credentials.json` (or, failing that, from the encrypted file).
+5. **Delete the plaintext credentials immediately:**
    ```bash
    rm -f credentials.json
    ```
-5. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves.
 6. Commit the new encrypted credentials file (and, for GCP, `.cloud-config.json`).
 
 ## Step 4: Ensure SessionStart Hook Exists
