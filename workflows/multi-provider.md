@@ -232,6 +232,12 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         az logout 2>/dev/null || true
         rm -f /tmp/credentials.json; continue
       fi
+      # Persist the az location for the session, as the GCP and AWS branches do
+      if [ -n "$CLAUDE_ENV_FILE" ]; then
+        AZ_BIN="$(dirname "$(command -v az)")"
+        grep -qxF "export PATH=\"$AZ_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+          echo "export PATH=\"$AZ_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+      fi
       ;;
   esac
 

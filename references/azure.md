@@ -160,13 +160,17 @@ Both tokens are valid for ~1 hour. **Important:** ARM tokens are NOT valid for M
 
 ## API Approach
 
-Use the Azure CLI (`az`) if available. Otherwise, use REST API calls with the appropriate token:
+In the usual remote setup, the user signs in on their own machine and pastes `ARM_TOKEN` and `GRAPH_TOKEN`; the `az` CLI in the sandbox is **not** signed in, and its commands do not read those variables. So use the REST calls with the pasted tokens, and use the CLI snippets only when `az account show` succeeds here (the CLI in this environment is itself signed in). The CLI snippets below check this and stop otherwise. REST calls:
 - **ARM operations** (role assignments, subscriptions): `curl -H "Authorization: Bearer $ARM_TOKEN"` against `https://management.azure.com`
 - **Graph operations** (app registrations, service principals, secrets): `curl -H "Authorization: Bearer $GRAPH_TOKEN"` against `https://graph.microsoft.com`
 
 ## Create Service Principal
 
 ```bash
+# CLI path only: the az CLI here must itself be signed in (see API Approach);
+# with pasted tokens, use the REST path below instead
+az account show >/dev/null 2>&1 \
+  || { echo "ERROR: az is not signed in here; use the REST path with ARM_TOKEN/GRAPH_TOKEN."; exit 1; }
 # A fixed display name such as "claude-agent" can make create-for-rbac modify an
 # existing app with that name. Derive a repo-specific name, refuse to proceed if
 # it is already taken, and ask the user to approve a different name instead.
@@ -301,6 +305,9 @@ With the CLI path, `az ad app delete --id "$(jq -r .appId credentials.json)"` do
 Roles are assigned to the **service principal**, so they apply to all team members automatically. No per-user role assignment needed.
 
 ```bash
+# CLI path only: the az CLI here must itself be signed in (see API Approach)
+az account show >/dev/null 2>&1 \
+  || { echo "ERROR: az is not signed in here; use the REST path below with ARM_TOKEN/GRAPH_TOKEN."; exit 1; }
 # APP_ID is the service principal's appId. During first-time setup it comes from
 # the credentials you just created; in later sessions read it from config.
 APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"

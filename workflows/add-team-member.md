@@ -53,9 +53,12 @@ Using the bootstrap token and provider-specific commands:
         -pass stdin \
         -in credentials.json -out "$ENC_FILE"; then
      # The provider-side credential is live but unusable: revoke it, then drop
-     # the plaintext, so nothing active and untracked is left behind.
+     # the plaintext, so nothing active and untracked is left behind. If a
+     # revocation fails, its non-secret ID goes to cloud-revoke-pending.txt
+     # (untracked) so it can still be found and removed by hand.
      rm -f "$ENC_FILE"
      echo "ERROR: encryption failed; revoking the new $PROVIDER credential."
+     pending() { echo "$(date -u +%FT%TZ) $PROVIDER $*" >> cloud-revoke-pending.txt; echo "WARNING: could not revoke $*; recorded in cloud-revoke-pending.txt."; }
      case "$PROVIDER" in
        gcp)
          KEY_ID=$(jq -r .private_key_id credentials.json)
@@ -64,7 +67,7 @@ Using the bootstrap token and provider-specific commands:
          curl -sS --fail -X DELETE \
            "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$KEY_ID" \
            -H "Authorization: Bearer $TOKEN" >/dev/null \
-           || echo "WARNING: could not delete key $KEY_ID; delete it via Key Management in references/gcp.md." ;;
+           || pending "key $KEY_ID of $SA_EMAIL (delete via Key Management in references/gcp.md)" ;;
        azure)
          # OBJECT_ID and NEW_SECRET_KEY_ID were printed by Add Client Secret
          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
@@ -72,9 +75,22 @@ Using the bootstrap token and provider-specific commands:
            -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
            -d "{\"keyId\": \"$NEW_SECRET_KEY_ID\"}")
          [ "$STATUS" = "204" ] \
-           || echo "WARNING: could not remove secret $NEW_SECRET_KEY_ID (HTTP $STATUS); remove it via Secret Management in references/azure.md." ;;
+           || pending "secret $NEW_SECRET_KEY_ID of app object $OBJECT_ID (HTTP $STATUS; remove via Secret Management in references/azure.md)" ;;
        aws)
-         echo "Run the standalone member rollback in references/aws.md (Add Team Member) now: it deletes the new user and its keys." ;;
+         # Find the user from the new key itself, then remove keys, groups, user
+         AK=$(jq -r '.access_key_id // .AccessKey.AccessKeyId // empty' credentials.json)
+         U=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>/dev/null)
+         if [ -n "$U" ] && [ "$U" != "None" ]; then
+           for k in $(aws iam list-access-keys --user-name "$U" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+             aws iam delete-access-key --user-name "$U" --access-key-id "$k"
+           done
+           for g in $(aws iam list-groups-for-user --user-name "$U" --query 'Groups[].GroupName' --output text); do
+             aws iam remove-user-from-group --group-name "$g" --user-name "$U"
+           done
+           aws iam delete-user --user-name "$U" || pending "IAM user $U (access key $AK)"
+         else
+           pending "access key $AK (its IAM user could not be looked up)"
+         fi ;;
      esac
      # Key IDs are printed above; the plaintext secret is never kept
      rm -f credentials.json

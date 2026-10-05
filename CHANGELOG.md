@@ -42,6 +42,10 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- AWS setup and Add Team Member check with `get-caller-identity` that the bootstrap credentials belong to the approved account before any IAM change.
+- Azure setup uses the REST path with the pasted tokens unless the sandbox's `az` is itself signed in; the CLI snippets check `az account show` and stop otherwise.
+- The multi-provider hook persists the Azure CLI location to `CLAUDE_ENV_FILE`.
+- Add Team Member's AWS rollback on failed encryption runs inline (finding the user from the new access key); any credential that cannot be revoked is recorded, without secrets, in an untracked `cloud-revoke-pending.txt`.
 - GCP offboarding resolves the project and service account in its own block; after an early (compromise-path) revoke, rotation no longer re-queues the deleted key in `revoke_pending`.
 - Add Team Member revokes the new GCP key, Azure secret, or AWS user when encryption fails, and always removes the plaintext.
 - All hook templates `cd` to `$CLAUDE_PROJECT_DIR` first, so a session started in a subdirectory still authenticates.

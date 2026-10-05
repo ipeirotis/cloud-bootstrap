@@ -13,7 +13,7 @@ The user's AWS account needs **IAM full access** or at minimum:
 The user's AWS account needs:
 - `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
-- for rolling back a failed run: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`
+- for rolling back a failed run: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:GetAccessKeyLastUsed`, `iam:ListGroupsForUser`
 
 ## Multi-User Strategy
 
@@ -207,6 +207,15 @@ First-Time Setup derives the group name and the user-name prefix from the reposi
 export AWS_ACCESS_KEY_ID="..."
 export AWS_SECRET_ACCESS_KEY="..."
 export AWS_SESSION_TOKEN="..."
+# The account ID gathered in First-Time Setup Step 2
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID to the account ID gathered in Step 2}"
+
+# Stop before any IAM change unless these credentials belong to the approved
+# account: otherwise every resource below would land in the wrong account
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing created."; exit 1; }
+[ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not $AWS_ACCOUNT_ID; nothing created."; exit 1; }
 
 # Repo-scoped IAM names (see "IAM Names" above)
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
@@ -322,6 +331,16 @@ USER_EMAIL=$(git config user.email)
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
 IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
+# The account this repo is configured for
+AWS_ACCOUNT_ID=$(aws_cfg project_id)
+[ -n "$AWS_ACCOUNT_ID" ] || { echo "ERROR: no AWS account (project_id) in .cloud-config.json."; exit 1; }
+
+# Stop before any IAM change unless these credentials belong to the approved
+# account: otherwise every resource below would land in the wrong account
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing created."; exit 1; }
+[ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not $AWS_ACCOUNT_ID; nothing created."; exit 1; }
 
 # Undo the user this block created (its keys, membership, then the user), so a
 # failed run leaves nothing that blocks a retry at create-user. Never touches
