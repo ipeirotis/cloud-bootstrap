@@ -59,21 +59,22 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
 # Hooks run in the session's current directory, which may be a subdirectory
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
+# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
+# the activated service account in gcloud's credential order. Clear it for this
+# script and the whole session before any early exit, including a missing or
+# unreadable config, so gcloud fails instead of running as the ambient principal.
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+fi
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
 
 PROVIDER=$(jq -r .provider "$CONFIG" 2>/dev/null) || exit 0
 if [ "$PROVIDER" != "gcp" ]; then exit 0; fi
-
-# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
-# the activated service account in gcloud's credential order. Clear it for this
-# script and the whole session before any early exit.
-unset CLOUDSDK_AUTH_ACCESS_TOKEN
-if [ -n "$CLAUDE_ENV_FILE" ]; then
-  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
-    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
-fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
@@ -232,8 +233,15 @@ case "$RC:$HTTP" in
     echo "ERROR: service account creation failed (curl exit $RC, HTTP ${HTTP:-none})."
     exit 1 ;;
 esac
-SA_EMAIL=$(jq -r '.email // empty' "$RESP"); rm -f "$RESP"
-[ -n "$SA_EMAIL" ] || { echo "ERROR: creation response has no service-account email."; exit 1; }
+SA_EMAIL=$(jq -r '.email // empty' "$RESP" 2>/dev/null); rm -f "$RESP"
+if [ -z "$SA_EMAIL" ]; then
+  # Created, but the response is unusable: remove the account so a retry is not
+  # blocked by the pre-existing-account check
+  curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
+    && echo "ERROR: creation response has no service-account email; removed $SA_ID." \
+    || echo "ERROR: creation response has no service-account email, and $SA_ID could not be deleted; delete it by hand."
+  exit 1
+fi
 echo "Created $SA_EMAIL; set SA_EMAIL to this in every later setup snippet."
 ```
 

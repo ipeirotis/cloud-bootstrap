@@ -266,7 +266,11 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
            "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
            -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
            -d "{\"keyId\": \"$1\"}")
-         [ "$HTTP" = 204 ] ;;
+         # Not 204: gone anyway if the app no longer lists it (lost response, earlier attempt)
+         [ "$HTTP" = 204 ] || { R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+             -H "Authorization: Bearer $GRAPH_TOKEN") \
+           && printf '%s' "$R" | jq -e --arg k "$1" 'all(.passwordCredentials[]; .keyId != $k)' >/dev/null \
+           && echo "Secret $1 no longer exists; clearing its record."; } ;;
      esac
    }
    FAILED=""; UNRECORDED=""

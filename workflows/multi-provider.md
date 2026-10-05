@@ -82,27 +82,30 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 # (timeout, interruption, a failing command). The GCP ADC copy is separate.
 trap 'rm -f /tmp/credentials.json' EXIT
 
+# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
+# the activated service account. Clear it for the session whenever GCP may be
+# configured: when GCP is among the providers, and when the config is missing
+# or unreadable (fail closed rather than run as the ambient principal).
+clear_gcp_token() {
+  unset CLOUDSDK_AUTH_ACCESS_TOKEN
+  if [ -n "$CLAUDE_ENV_FILE" ]; then
+    grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+      echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+  fi
+}
+
 CONFIG=".cloud-config.json"
-if [ ! -f "$CONFIG" ]; then exit 0; fi
+if [ ! -f "$CONFIG" ]; then clear_gcp_token; exit 0; fi
+
+PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || { clear_gcp_token; exit 0; }
+if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then clear_gcp_token; exit 0; fi
+if jq -e 'any(.providers[]; .provider == "gcp")' "$CONFIG" >/dev/null 2>&1; then clear_gcp_token; fi
 
 USER_EMAIL=$(git config user.email 2>/dev/null || true)
 if [ -z "$USER_EMAIL" ]; then exit 0; fi
 
-PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || exit 0
-if [ -z "$PROVIDER_COUNT" ] || [ "$PROVIDER_COUNT" = "null" ]; then exit 0; fi
-
 for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   PROVIDER=$(jq -r ".providers[$i].provider" "$CONFIG" 2>/dev/null) || continue
-  if [ "$PROVIDER" = "gcp" ]; then
-    # Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which
-    # outranks the activated service account. Clear it for the session before
-    # any of the continue paths below.
-    unset CLOUDSDK_AUTH_ACCESS_TOKEN
-    if [ -n "$CLAUDE_ENV_FILE" ]; then
-      grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
-        echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
-    fi
-  fi
   ENC_FILE=".cloud-credentials.${PROVIDER}.${USER_EMAIL}.enc"
   if [ ! -f "$ENC_FILE" ]; then continue; fi
 

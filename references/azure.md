@@ -201,8 +201,14 @@ fi
 # later rotation can find and revoke exactly this secret
 KEY_ID=$(az ad app credential list --id "$(jq -r .appId credentials.json)" --query '[0].keyId' -o tsv)
 [ -n "$KEY_ID" ] || { echo "ERROR: could not read the new secret's keyId; run Rollback a Failed Setup."; exit 1; }
-(umask 077 && jq --arg k "$KEY_ID" '. + {keyId: $k}' credentials.json > credentials.json.tmp) \
-  && mv credentials.json.tmp credentials.json
+# The rewrite goes through a private temp file outside the repository (the
+# only plaintext in the repo stays credentials.json, which is ignored and is
+# what an interrupted-run check looks for)
+TMPJ=$(umask 077 && mktemp)
+if (umask 077 && jq --arg k "$KEY_ID" '. + {keyId: $k}' credentials.json > "$TMPJ") \
+   && mv "$TMPJ" credentials.json; then :; else
+  rm -f "$TMPJ"; echo "ERROR: could not add the keyId to credentials.json; run Rollback a Failed Setup."; exit 1
+fi
 ```
 
 This returns `appId`, `password` (client secret), and `tenant`; the snippet adds the secret's `keyId`.
@@ -310,6 +316,30 @@ if [ -z "$APP_OBJECT_ID" ]; then
     -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
 fi
 if [ -n "$APP_OBJECT_ID" ]; then
+  # Role assignments are not removed with the service principal (they linger as
+  # "Identity not found" and count against the subscription's quota): delete
+  # the ones setup granted first. Needs ARM_TOKEN and SUBSCRIPTION_ID.
+  APP_ID=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.appId // empty')
+  SP_OBJECT_ID=$( [ -n "$APP_ID" ] && curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
+    --data-urlencode "\$filter=appId eq '$APP_ID'" \
+    -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
+  RA_OK=1
+  if [ -n "$SP_OBJECT_ID" ]; then
+    if [ -n "${ARM_TOKEN:-}" ] && [ -n "${SUBSCRIPTION_ID:-}" ] \
+       && RAS=$(curl -sS --fail -G "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments" \
+            --data-urlencode "api-version=2022-04-01" \
+            --data-urlencode "\$filter=principalId eq '$SP_OBJECT_ID'" \
+            -H "Authorization: Bearer $ARM_TOKEN" | jq -r '.value[].id'); then
+      for RA in $RAS; do
+        curl -sS --fail -X DELETE "https://management.azure.com${RA}?api-version=2022-04-01" \
+          -H "Authorization: Bearer $ARM_TOKEN" >/dev/null || RA_OK=0
+      done
+    else
+      RA_OK=0
+    fi
+  fi
+  [ "$RA_OK" = 1 ] || echo "WARNING: could not remove every role assignment of $SP_NAME; delete them in the portal (Access control (IAM))."
   curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
     -H "Authorization: Bearer $GRAPH_TOKEN" \
     && echo "Deleted application $SP_NAME." \
@@ -318,7 +348,7 @@ fi
 rm -f credentials.json app.json sp.json secret.json
 ```
 
-With the CLI path, `az ad app delete --id "$(jq -r .appId credentials.json)"` does the same; run it before removing `credentials.json`. Role assignments left on the deleted principal no longer grant anything and can be removed with `az role assignment delete --assignee <appId>`.
+With the CLI path, run `az role assignment delete --assignee "$(jq -r .appId credentials.json)"` first (role assignments are not removed with the application), then `az ad app delete --id "$(jq -r .appId credentials.json)"`, both before removing `credentials.json`.
 
 ## Grant Roles
 
@@ -528,11 +558,19 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 [ -n "$IDS" ] || { echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1; }
 FAILED=""
+# The app's current secret IDs: a secret it no longer lists is already gone
+# (an earlier attempt removed it, or its response was lost)
+secret_absent() {
+  local R; R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+    -H "Authorization: Bearer $GRAPH_TOKEN") \
+    && printf '%s' "$R" | jq -e --arg k "$1" 'all(.passwordCredentials[]; .keyId != $k)' >/dev/null
+}
 for ID in $IDS; do
   STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
     "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/removePassword" \
     -H "Authorization: Bearer $GRAPH_TOKEN" -H "Content-Type: application/json" \
     -d "{\"keyId\": \"$ID\"}")
+  [ "$STATUS" = "204" ] || ! secret_absent "$ID" || STATUS=204
   if [ "$STATUS" = "204" ]; then
     jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
