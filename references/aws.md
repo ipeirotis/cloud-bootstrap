@@ -6,7 +6,7 @@ The user's AWS account needs **IAM full access** or at minimum:
 - `iam:CreateGroup`, `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
 - `iam:AttachGroupPolicy` / `iam:PutGroupPolicy`
-- for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
+- for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:ListAttachedGroupPolicies`, `iam:ListGroupPolicies`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
 
 ## Team Member Prerequisites (Adding to Existing Setup)
 
@@ -261,6 +261,14 @@ rollback_aws_setup() {
     aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" 2>/dev/null
     aws iam delete-user --user-name "$IAM_USER"
   fi
+  # A group cannot be deleted while policies are attached: detach managed
+  # policies and delete inline ones first (Grant Roles may already have run)
+  for arn in $(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+    aws iam detach-group-policy --group-name "$GROUP_NAME" --policy-arn "$arn"
+  done
+  for pol in $(aws iam list-group-policies --group-name "$GROUP_NAME" --query 'PolicyNames[]' --output text 2>/dev/null); do
+    aws iam delete-group-policy --group-name "$GROUP_NAME" --policy-name "$pol"
+  done
   aws iam delete-group --group-name "$GROUP_NAME"
   rm -f credentials.json
 }
@@ -289,17 +297,17 @@ aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
 Reformat `credentials.json` to a clean structure before encrypting:
 
 ```bash
-cat credentials.json | jq --arg region "$AWS_REGION" '{
+# umask 077: the reformatted file holds the secret key too, and mv keeps its mode
+(umask 077 && jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
   region: $region
-}' > credentials_clean.json
-mv credentials_clean.json credentials.json
+}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json
 ```
 
 **Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
 
-If a later setup step fails (attaching a policy, encrypting, committing), undo the same resources before retrying: delete the user's access keys, remove the user from `$GROUP_NAME`, delete the user, detach the group's policies, and delete the group.
+If a later setup step fails (attaching a policy, encrypting, committing), undo the same resources before retrying: run `rollback_aws_setup` (define it as above, with `CREATED_USER=1`, `GROUP_NAME` and `IAM_USER` set), which deletes the user's access keys, removes the user from the group, deletes the user, detaches or deletes the group's policies, and deletes the group.
 
 **For `.cloud-config.json`:** set `service_account` to `$GROUP_NAME` (the group) and add `"iam_user_prefix": "$USER_PREFIX"`, so later workflows derive the same names.
 
@@ -372,12 +380,12 @@ aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
 # Reformat — read region from existing config. In multi-provider mode the
 # region lives inside the matching providers[] entry, not at the top level.
 AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .region) else (select(.provider=="aws") | .region) end) // "us-east-1"' .cloud-config.json 2>/dev/null)
-cat credentials.json | jq --arg region "$AWS_REGION" '{
+# umask 077: the reformatted file holds the secret key too, and mv keeps its mode
+(umask 077 && jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
   region: $region
-}' > credentials_clean.json
-mv credentials_clean.json credentials.json
+}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json
 ```
 
 If a later step fails (encrypting, committing), roll the member back before retrying. This snippet stands alone, so it works from a fresh shell:
@@ -437,6 +445,14 @@ Prefer inline policies scoped to specific resources over broad managed policies.
 After decrypting credentials to `/tmp/credentials.json`:
 
 ```bash
+# Stored keys are long-lived IAM-user keys: a leftover session token or profile
+# (from the bootstrap, an assumed role) would pair with them and fail, so clear
+# both here and for the rest of the session
+unset AWS_SESSION_TOKEN AWS_PROFILE
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "unset AWS_SESSION_TOKEN AWS_PROFILE" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset AWS_SESSION_TOKEN AWS_PROFILE" >> "$CLAUDE_ENV_FILE"
+fi
 export AWS_ACCESS_KEY_ID=$(jq -r .access_key_id /tmp/credentials.json)
 export AWS_SECRET_ACCESS_KEY=$(jq -r .secret_access_key /tmp/credentials.json)
 export AWS_DEFAULT_REGION=$(jq -r .region /tmp/credentials.json)

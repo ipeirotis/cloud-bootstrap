@@ -42,6 +42,10 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
 - GCP Create Key and Key Management require the created or configured `SA_EMAIL` instead of falling back to `claude-agent@<project>`, which could be an unrelated existing account.
 - Rotation takes the old GCP key ID from the committed `key_ids` entry when the shell has lost it, so `revoke_pending` is always written before that entry is replaced.
+- GCP Create Key deletes the new provider-side key when the response cannot be decoded or validated locally.
+- Manual GCP activation clears `CLOUDSDK_AUTH_ACCESS_TOKEN`, and manual AWS activation clears `AWS_SESSION_TOKEN`/`AWS_PROFILE`, in the shell and in `CLAUDE_ENV_FILE`, as the hooks do.
+- AWS setup rollback detaches managed and deletes inline group policies before deleting the group; the reformatted AWS `credentials.json` is written under `umask 077`.
+- Uninstall removes the `/cloud-revoke-pending.txt` ignore rule.
 - Rotation step 8 stops, instead of warning, when no old GCP key ID is known (configs older than `key_ids`), so the old key is never left unrecorded.
 - Add Team Member's Azure rollback re-resolves the application and finds the new secret by its member label when run in a fresh shell.
 - `revoke_pending` is a list per member: a second rotation adds to it instead of overwriting a still-live key; rotation step 9 deletes every listed key (and, with `COMPROMISE=1` before the replacement exists, the current `key_ids` key, even from a fresh shell); offboarding deletes the current and all pending keys and removes the `.enc` file only when all are gone.

@@ -284,7 +284,7 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 
 # Fail on HTTP errors and validate the response before writing a key file, so
 # an error body is never decoded into credentials.json and encrypted.
-RESP=$(mktemp)
+RESP=$(umask 077 && mktemp)
 if ! curl -sS --fail -X POST \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN" \
@@ -292,11 +292,25 @@ if ! curl -sS --fail -X POST \
   -d '{"keyAlgorithm": "KEY_ALG_RSA_2048"}' > "$RESP"; then
   echo "ERROR: key creation failed."; rm -f "$RESP"; exit 1
 fi
+# The key now exists at Google. Keep its resource name until the local file is
+# validated; on any local failure, delete the key so it is not left orphaned.
+KEY_NAME=$(jq -r '.name // empty' "$RESP")
 KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP"); rm -f "$RESP"
-if [ -z "$KEY_DATA" ]; then echo "ERROR: response has no privateKeyData."; exit 1; fi
-(umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json)
+discard_new_key() {
+  rm -f credentials.json
+  if [ -n "$KEY_NAME" ] && curl -sS --fail -X DELETE "https://iam.googleapis.com/v1/$KEY_NAME" \
+       -H "Authorization: Bearer $TOKEN" >/dev/null; then
+    echo "Deleted the unusable new key ${KEY_NAME##*/}."
+  else
+    echo "WARNING: could not delete new key '${KEY_NAME:-unknown}'; delete it via Key Management."
+    echo "$(date -u +%FT%TZ) gcp key ${KEY_NAME:-unknown}" >> cloud-revoke-pending.txt
+  fi
+}
+[ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; discard_new_key; exit 1; }
+(umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json) \
+  || { echo "ERROR: could not decode the key."; discard_new_key; exit 1; }
 jq -e '.type == "service_account" and .private_key' credentials.json >/dev/null \
-  || { echo "ERROR: decoded key is not a service-account key."; rm -f credentials.json; exit 1; }
+  || { echo "ERROR: decoded key is not a service-account key."; discard_new_key; exit 1; }
 KEY_ID=$(jq -r .private_key_id credentials.json)
 ```
 
@@ -392,6 +406,13 @@ gcloud CLI auth store) can authenticate too:
 # (don't assume SessionStart already left a file behind). KEY/ENC_FILE come
 # from the Authenticate workflow.
 ADC_KEY="/tmp/gcp-adc-credentials.json"   # decrypted here, never committed
+# A preset CLOUDSDK_AUTH_ACCESS_TOKEN outranks the activated account in
+# gcloud's credential order: clear it here and for the rest of the session
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+fi
 (umask 077 && echo "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
 gcloud auth activate-service-account --key-file="$ADC_KEY"
