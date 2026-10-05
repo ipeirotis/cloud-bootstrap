@@ -69,6 +69,27 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
     echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
 
+# Undo an earlier activation in this container (gcloud's stored account, the
+# ADC key file, the persisted export) whenever this run exits without renewing
+# it: a removed passphrase or a broken file must disable repository auth, not
+# leave the previous session's identity in place.
+ADC_KEY="/tmp/gcp-adc-credentials.json"
+clear_prior_gcp() {
+  local G
+  if [ -f "$ADC_KEY" ]; then
+    for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
+      command -v "$G" >/dev/null 2>&1 && { "$G" auth revoke "$(jq -r .client_email "$ADC_KEY" 2>/dev/null)" >/dev/null 2>&1 || true; break; }
+    done
+    rm -f "$ADC_KEY"
+  fi
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
+    echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
+  fi
+}
+trap '[ "${GCP_ACTIVATED:-}" = 1 ] || clear_prior_gcp' EXIT
+
+
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
 if [ ! -f "$CONFIG" ]; then exit 0; fi
@@ -158,10 +179,13 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   GCLOUD_BIN="$(dirname "$(command -v gcloud)")"
   grep -qxF "export PATH=\"$GCLOUD_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "export PATH=\"$GCLOUD_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+  # Drop an unset an earlier failed run left, so the export below takes effect
+  sed -i '/^unset GOOGLE_APPLICATION_CREDENTIALS$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
   grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
 fi
 
+GCP_ACTIVATED=1
 echo "GCP credentials activated for $USER_EMAIL (gcloud CLI + Python ADC)"
 ```
 

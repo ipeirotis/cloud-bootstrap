@@ -121,12 +121,27 @@ export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
 # profile selection) here and for the rest of the session below.
 unset AWS_SESSION_TOKEN AWS_PROFILE
 
-# Use the keys only in this repo's account: a stale or copied file could hold
-# valid keys for another account, and every later command would run there
+# The IAM user this member should be (see "IAM Names" in references/aws.md)
+expected_iam_user() {   # $1 = email, $2 = user prefix
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
+  printf '%s' "$n"
+}
+# Use the keys only as this member's user in this repo's account: a stale or
+# copied file could hold valid keys for another account or another user
 ACCOUNT=$(jq -r '.project_id // empty' "$CONFIG" 2>/dev/null)
-CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
-if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
-  echo "WARNING: $ENC_FILE is for AWS account ${CALLER:-unknown (lookup failed)}, not ${ACCOUNT:-the configured one}; not activating it."
+PREFIX=$(jq -r '.iam_user_prefix // empty' "$CONFIG" 2>/dev/null); PREFIX="${PREFIX:-claude-agent}"
+WANT_USER=$(expected_iam_user "$USER_EMAIL" "$PREFIX")
+read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
+if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+  echo "WARNING: $ENC_FILE is for ${CALLER_ARN:-an unknown identity (lookup failed)}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activating it."
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
   exit 0
 fi
@@ -332,15 +347,18 @@ If a later setup step fails (attaching a policy, encrypting, committing), or the
 
 ### Rollback a Failed Setup
 
-Run it from any shell: it reads the names from `.cloud-setup-pending.json` (or `AWS_ACCOUNT_ID`, `GROUP_NAME`, `IAM_USER`), checks the account, and deletes the user's access keys, its group memberships and the user, then the group's policies and the group. Anything already gone counts as done. The pending record is deleted only when everything is gone.
+Run it from any shell: it reads the names from `.cloud-setup-pending.json` (or `AWS_ACCOUNT_ID`, `GROUP_NAME`, `IAM_USER`), checks the account, and deletes the user's access keys, its group memberships and the user, then the group's policies and the group. For a record Add Team Member wrote (`member_only`), it deletes only that member's user and leaves the shared group. Anything already gone counts as done. The pending record is deleted only when everything is gone.
 
 ```bash
 PENDING=.cloud-setup-pending.json
 pend() { jq -r --arg k "$1" 'select(.provider == "aws") | .[$k] // empty' "$PENDING" 2>/dev/null; }
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(pend account)}"
-GROUP_NAME="${GROUP_NAME:-$(pend group)}"
 IAM_USER="${IAM_USER:-$(pend iam_user)}"   # empty: the user was never created
-[ -n "$AWS_ACCOUNT_ID" ] && [ -n "$GROUP_NAME" ] || { echo "ERROR: set AWS_ACCOUNT_ID and GROUP_NAME (no AWS entry in $PENDING)."; exit 1; }
+# An Add Team Member record (member_only) covers only the member's user: the
+# shared group belongs to the whole team and is never deleted here
+if [ "$(pend member_only)" = true ]; then GROUP_NAME=""; else GROUP_NAME="${GROUP_NAME:-$(pend group)}"; fi
+[ -n "$AWS_ACCOUNT_ID" ] && { [ -n "$GROUP_NAME" ] || [ -n "$IAM_USER" ]; } \
+  || { echo "ERROR: set AWS_ACCOUNT_ID and GROUP_NAME or IAM_USER (no AWS entry in $PENDING)."; exit 1; }
 CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
   || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
 [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
@@ -358,7 +376,9 @@ if [ -n "$IAM_USER" ]; then
     RB_OK=0; echo "WARNING: could not list $IAM_USER's keys: $OUT"
   fi
 fi
-if OUT=$(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --query 'AttachedPolicies[].PolicyArn' --output text 2>&1); then
+if [ -z "$GROUP_NAME" ]; then
+  :   # member-only rollback: the shared group stays
+elif OUT=$(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --query 'AttachedPolicies[].PolicyArn' --output text 2>&1); then
   for arn in $OUT; do aws iam detach-group-policy --group-name "$GROUP_NAME" --policy-arn "$arn" || RB_OK=0; done
   for pol in $(aws iam list-group-policies --group-name "$GROUP_NAME" --query 'PolicyNames[]' --output text); do
     aws iam delete-group-policy --group-name "$GROUP_NAME" --policy-name "$pol" || RB_OK=0
@@ -427,11 +447,18 @@ rollback_member() {
   rm -f credentials.json
 }
 
+# Record the member's user before creating it (not secret; member_only: a
+# rollback removes this user, never the shared group), so an interruption
+# before credentials.json exists is still recovered from any shell
+jq -n --arg a "$AWS_ACCOUNT_ID" --arg u "$IAM_USER" \
+  '{provider: "aws", member_only: true, account: $a, iam_user: $u}' > .cloud-setup-pending.json \
+  || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 # Create user and add to the existing group. Stop unless create-user succeeds:
 # EntityAlreadyExists (409) means a user of this name already exists, and
 # continuing would hand this member that user's identity. Nothing was created
 # then, so there is nothing to roll back.
 if ! aws iam create-user --user-name "$IAM_USER"; then
+  rm -f .cloud-setup-pending.json
   echo "ERROR: could not create IAM user $IAM_USER (it may already exist); stop and resolve with the user."
   exit 1
 fi

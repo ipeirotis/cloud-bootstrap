@@ -89,6 +89,15 @@ if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   exit 0
 fi
 
+# Use the credential only if it is for the configured application: a stale or
+# copied file could hold another service principal with access to this
+# subscription, and az account set would not notice
+APP_CFG=$(jq -r '.service_account // empty' "$CONFIG" 2>/dev/null)
+if [ -z "$APP_CFG" ] || [ "$(jq -r '.appId // empty' /tmp/credentials.json)" != "$APP_CFG" ]; then
+  echo "WARNING: $ENC_FILE is not for application ${APP_CFG:-configured in .cloud-config.json}; not activating it."
+  exit 0
+fi
+
 if ! az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \
@@ -194,9 +203,11 @@ if [ -n "$SP_HITS" ] || [ -n "$APP_HITS" ]; then
   exit 1
 fi
 
-# Record the name before creating anything (not secret), so "Rollback a Failed
-# Setup" can find the application from any shell if this run stops part-way
-jq -n --arg n "$SP_NAME" --arg s "${SUBSCRIPTION_ID:-}" '{provider: "azure", sp_name: $n, subscription: $s}' \
+# Record the name and subscription before creating anything (not secret), so
+# "Rollback a Failed Setup" can find the application and its role assignments
+# from any shell if this run stops part-way
+[ -n "${SUBSCRIPTION_ID:-}" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2; nothing created."; exit 1; }
+jq -n --arg n "$SP_NAME" --arg s "$SUBSCRIPTION_ID" '{provider: "azure", sp_name: $n, subscription: $s}' \
   > .cloud-setup-pending.json || { echo "ERROR: could not write .cloud-setup-pending.json; nothing created."; exit 1; }
 # Creating without a role assignment is the default (--skip-assignment is obsolete).
 # The output holds the new client secret: write it private (0600) from the start.
@@ -265,9 +276,11 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value | length')
 [ "$EXISTING" = "0" ] || { echo "ERROR: an application named $SP_NAME already exists (or the lookup failed); choose another name with the user."; exit 1; }
-# Record the name before creating anything (not secret), so "Rollback a Failed
-# Setup" can find the application from any shell if this run stops part-way
-jq -n --arg n "$SP_NAME" --arg s "${SUBSCRIPTION_ID:-}" '{provider: "azure", sp_name: $n, subscription: $s}' \
+# Record the name and subscription before creating anything (not secret), so
+# "Rollback a Failed Setup" can find the application and its role assignments
+# from any shell if this run stops part-way
+[ -n "${SUBSCRIPTION_ID:-}" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2; nothing created."; exit 1; }
+jq -n --arg n "$SP_NAME" --arg s "$SUBSCRIPTION_ID" '{provider: "azure", sp_name: $n, subscription: $s}' \
   > .cloud-setup-pending.json
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
@@ -523,6 +536,20 @@ discard_unknown_secret() {
   echo "Remove each one no run of yours is using (not in key_ids once that run is committed)."
   exit 1
 }
+# From the request until credentials.json exists, the new secret is known only
+# from the response in RESP_DIR (removed on exit, and not something the
+# interrupted-run check sees): if this shell is stopped, revoke the secret a
+# complete response names, else record the candidates as above
+on_signal() {
+  local K; K=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json" 2>/dev/null)
+  if [ -n "$K" ]; then
+    CRED_ID="$K" OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+      bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+    exit 1
+  fi
+  discard_unknown_secret "interrupted during addPassword"
+}
+trap on_signal INT TERM HUP
 # (if/else so the status is captured even under `set -e`)
 if HTTP=$(umask 077 && curl -sS -o "$RESP_DIR/secret.json" -w '%{http_code}' -X POST \
   "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
@@ -531,7 +558,7 @@ if HTTP=$(umask 077 && curl -sS -o "$RESP_DIR/secret.json" -w '%{http_code}' -X 
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}"); then RC=0; else RC=$?; fi
 case "$RC:$HTTP" in
   0:2??) ;;
-  0:4??) echo "ERROR: Graph rejected addPassword (HTTP $HTTP); no secret was created."; exit 1 ;;
+  0:4??) trap - INT TERM HUP; echo "ERROR: Graph rejected addPassword (HTTP $HTTP); no secret was created."; exit 1 ;;
   *) discard_unknown_secret "addPassword outcome unknown (curl exit $RC, HTTP ${HTTP:-none})" ;;
 esac
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
@@ -550,6 +577,8 @@ echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
   --arg tenant "$TENANT_ID" \
   --arg keyId "$NEW_SECRET_KEY_ID" \
   '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
+# credentials.json now marks the run as unfinished for the next session
+trap - INT TERM HUP
 
 # Record which secret is this member's (not secret), so offboarding can find
 # it without the member's passphrase; commit .cloud-config.json with the .enc
@@ -642,6 +671,10 @@ Commit the removed credential file and `.cloud-config.json` together.
 After decrypting credentials to `/tmp/credentials.json`:
 
 ```bash
+# Only a credential for the configured application (not a stale or copied one)
+APP_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json)
+[ -n "$APP_CFG" ] && [ "$(jq -r '.appId // empty' /tmp/credentials.json)" = "$APP_CFG" ] \
+  || { rm -f /tmp/credentials.json; echo "ERROR: the credential is not for application ${APP_CFG:-configured in .cloud-config.json}."; exit 1; }
 az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \

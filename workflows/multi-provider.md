@@ -46,7 +46,7 @@ If `.cloud-config.json` has a top-level `provider` field (single-provider format
 1. Read the existing single-provider config and the new provider's reference file.
 2. **Provision the new provider** exactly as First-Time Setup does for it: resolve that provider's encryption key first (stop if missing), propose roles and get the user's approval, get its bootstrap token, create the identity, grant only the approved roles, generate its credentials, and encrypt them to `.cloud-credentials.<new-provider>.<email>.enc`. The creation snippet records the new identity's names in `.cloud-setup-pending.json` (make sure `.gitignore` has `/.cloud-setup-pending.json` next to `/credentials.json`). Keep `credentials.json` and that file until step 4 has written the new entry: if the run is interrupted before then, the next session finds them and rolls the new identity back ("Recovering an Interrupted Run" in SKILL.md); a failure in this step needs the provider's "Rollback a Failed Setup" too.
    Until step 4, `.cloud-config.json` still describes only the old provider, and the reference snippets read config only for an entry whose `provider` matches, so they find nothing for the new one. Set the new provider's identifiers at the top of every snippet you run, since each snippet may run in a fresh shell: GCP `PROJECT_ID` and `SA_EMAIL`; AWS `GROUP_NAME`, `USER_PREFIX`, and `AWS_REGION`; Azure `SUBSCRIPTION_ID`, `TENANT_ID`, and `APP_ID`. Keep them for step 4.
-3. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc` with `git mv`, and commit that alone, a commit that changes nothing else about them. The hooks' age check reads `git log --follow --diff-filter=AM`, which follows the rename and ignores it, so a migrated key keeps its real age.
+3. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc` with `git mv`, without committing yet: a commit holding only the rename would leave a checkout whose single-provider config no longer matches its file names. The rename is committed together with the new provider's `.enc` and the rewritten config (step 6); renaming does not change the files' contents, and the hooks' age check reads `git log --follow --diff-filter=AM`, which follows the rename and ignores it, so a migrated key keeps its real age.
 4. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one (each with its own `roles` and `created_at`; for a new GCP or Azure entry, also its `key_ids`: the GCP key ID or the Azure secret's `keyId`, read from `credentials.json`: `jq -r .private_key_id` for GCP, `jq -r .keyId` for Azure; it is not secret). Only now, with the files renamed and the config describing both providers, delete the plaintext and the pending record: `rm -f credentials.json .cloud-setup-pending.json`. Until then they mark the migration as unfinished, so an interrupted run is recovered (finishing steps 3 and 4) rather than read as a missing credential.
 5. Replace `.claude/hooks/cloud-auth.sh` with the multi-provider hook below.
 6. Verify each provider's credentials with its smoke test, then commit all changes together.
@@ -80,18 +80,49 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 # The loop decrypts each provider's key to /tmp/credentials.json and may then
 # spend minutes installing a CLI; remove the plaintext however the hook ends
 # (timeout, interruption, a failing command). The GCP ADC copy is separate.
-trap 'rm -f /tmp/credentials.json' EXIT
+# If GCP may be configured but this run does not activate it, also undo an
+# earlier activation in this container (stored account, ADC key, export), so a
+# removed passphrase or broken file disables repository auth
+clear_prior_gcp() {
+  local G K=/tmp/gcp-adc-credentials.json
+  if [ -f "$K" ]; then
+    for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
+      command -v "$G" >/dev/null 2>&1 && { "$G" auth revoke "$(jq -r .client_email "$K" 2>/dev/null)" >/dev/null 2>&1 || true; break; }
+    done
+    rm -f "$K"
+  fi
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+    sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
+    echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
+  fi
+}
+trap 'rm -f /tmp/credentials.json; [ "${GCP_CONFIGURED:-}" != 1 ] || [ "${GCP_OK:-}" = 1 ] || clear_prior_gcp' EXIT
 
 # Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
 # the activated service account. Clear it for the session whenever GCP may be
 # configured: when GCP is among the providers, and when the config is missing
 # or unreadable (fail closed rather than run as the ambient principal).
 clear_gcp_token() {
+  GCP_CONFIGURED=1
   unset CLOUDSDK_AUTH_ACCESS_TOKEN
   if [ -n "$CLAUDE_ENV_FILE" ]; then
     grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
       echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
   fi
+}
+
+# The IAM user this member should be (see "IAM Names" in references/aws.md)
+expected_iam_user() {   # $1 = email, $2 = user prefix
+  local h n
+  h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
+  if [ "$2" = "claude-agent" ]; then
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+  else
+    n="$2-$(printf '%s' "$1" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+    [ "$n" = "$2-$1" ] || n="${n:0:55}-$h"
+  fi
+  [ ${#n} -le 64 ] || n="${n:0:55}-$h"
+  printf '%s' "$n"
 }
 
 CONFIG=".cloud-config.json"
@@ -181,9 +212,11 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         GCLOUD_BIN="$(dirname "$(command -v gcloud)")"
         grep -qxF "export PATH=\"$GCLOUD_BIN:\$PATH\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
           echo "export PATH=\"$GCLOUD_BIN:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+        sed -i '/^unset GOOGLE_APPLICATION_CREDENTIALS$/d' "$CLAUDE_ENV_FILE" 2>/dev/null || true
         grep -qxF "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" "$CLAUDE_ENV_FILE" 2>/dev/null || \
           echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$GCP_ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
       fi
+      GCP_OK=1
       ;;
     aws)
       if ! command -v aws &>/dev/null; then
@@ -207,11 +240,14 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       export AWS_DEFAULT_REGION=$(jq -r '.region // empty' /tmp/credentials.json)
       # Long-lived IAM-user keys: drop any stale STS session token or profile
       unset AWS_SESSION_TOKEN AWS_PROFILE
-      # Only in this repo's account (a stale or copied file could hold another's)
+      # Only as this member's user in this repo's account (a stale or copied
+      # file could hold another account's or another user's keys)
       ACCOUNT=$(jq -r ".providers[$i].project_id // empty" "$CONFIG")
-      CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
-      if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
-        echo "WARNING: $ENC_FILE is for AWS account ${CALLER:-unknown (lookup failed)}, not ${ACCOUNT:-the configured one}; not activating it."
+      PREFIX=$(jq -r ".providers[$i].iam_user_prefix // empty" "$CONFIG"); PREFIX="${PREFIX:-claude-agent}"
+      WANT_USER=$(expected_iam_user "$USER_EMAIL" "$PREFIX")
+      read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
+      if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+        echo "WARNING: $ENC_FILE is for ${CALLER_ARN:-an unknown identity (lookup failed)}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activating it."
         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
         rm -f /tmp/credentials.json; continue
       fi
@@ -236,6 +272,12 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
           echo "WARNING: Azure CLI install failed — skipping Azure auth."
           rm -f /tmp/credentials.json; continue
         fi
+      fi
+      # Only a credential for the configured application (not a stale or copied one)
+      APP_CFG=$(jq -r ".providers[$i].service_account // empty" "$CONFIG")
+      if [ -z "$APP_CFG" ] || [ "$(jq -r '.appId // empty' /tmp/credentials.json)" != "$APP_CFG" ]; then
+        echo "WARNING: $ENC_FILE is not for application ${APP_CFG:-configured}; skipping Azure."
+        rm -f /tmp/credentials.json; continue
       fi
       if ! az login --service-principal \
         --username "$(jq -r .appId /tmp/credentials.json)" \

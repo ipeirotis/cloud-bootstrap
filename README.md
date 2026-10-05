@@ -127,11 +127,16 @@ DEST=.claude/skills/cloud-bootstrap
 
 # MANIFEST lists every distributed file (including scripts/discard-credential.sh,
 # which the workflows call when a new credential has to be revoked)
-FILES=$(curl -fsSL "$BASE/MANIFEST" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$')
+# Download everything to a temp dir first; install only if every file arrived,
+# so a failed download never leaves a mix of old and new files
+FILES=$(curl -fsSL "$BASE/MANIFEST" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$') \
+  || { echo "ERROR: could not download MANIFEST"; exit 1; }
+STAGE=$(mktemp -d)
 for FILE in $FILES; do
-  mkdir -p "$DEST/$(dirname "$FILE")"
-  curl -fsSL "$BASE/$FILE" -o "$DEST/$FILE" || { echo "ERROR: could not download $FILE"; exit 1; }
+  mkdir -p "$STAGE/$(dirname "$FILE")"
+  curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
 done
+mkdir -p "$DEST" && cp -R "$STAGE"/. "$DEST"/ && rm -rf "$STAGE"
 
 git add "$DEST"
 git commit -m "Add cloud-bootstrap skill"
