@@ -74,14 +74,19 @@ fi
 # it: a removed passphrase or a broken file must disable repository auth, not
 # leave the previous session's identity in place.
 ADC_KEY="/tmp/gcp-adc-credentials.json"
+# Note the earlier account now: a replacement key moved over the file before a
+# failed login would otherwise hide which cached account still needs revoking
+PRIOR_SA=$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null || true)
 clear_prior_gcp() {
-  local G
-  if [ -f "$ADC_KEY" ]; then
-    for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
-      command -v "$G" >/dev/null 2>&1 && { "$G" auth revoke "$(jq -r .client_email "$ADC_KEY" 2>/dev/null)" >/dev/null 2>&1 || true; break; }
+  local G A
+  for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
+    command -v "$G" >/dev/null 2>&1 || continue
+    for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)"; do
+      [ -z "$A" ] || "$G" auth revoke "$A" >/dev/null 2>&1 || true
     done
-    rm -f "$ADC_KEY"
-  fi
+    break
+  done
+  rm -f "$ADC_KEY" "$ADC_KEY.new"
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
     sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
     echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
@@ -134,9 +139,7 @@ fi
 # gcloud CLI auth store) can authenticate. It lives only in the ephemeral
 # sandbox, never in the repo (the repo only ever holds the encrypted .enc).
 ADC_KEY="/tmp/gcp-adc-credentials.json"
-# Decrypt to a new file and replace the key file only once the new key is
-# known good: until then the old file still names the earlier account, which
-# the EXIT trap needs in order to log it out if this run fails
+# Decrypt to a separate file and check it before it replaces the key file
 NEW_KEY="$ADC_KEY.new"
 if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
   -pass stdin -in "$ENC_FILE" -out "$NEW_KEY" 2>/dev/null); then
