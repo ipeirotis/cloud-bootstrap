@@ -26,6 +26,15 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
    pcfg() { jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider == \$p)) else . end) | $1 // empty" .cloud-config.json; }
    [ -n "$OLD_KEY_ID" ] || { echo "ERROR: set OLD_KEY_ID to the key being replaced."; exit 1; }
+   # An earlier, interrupted rotation may already have saved the key being
+   # replaced. Never overwrite that record: after step 6 the .enc holds the
+   # replacement, so re-reading OLD_KEY_ID from it would name the new key.
+   EXISTING=$(pcfg '.rotating[$e]')
+   if [ -n "$EXISTING" ] && [ "$EXISTING" != "$OLD_KEY_ID" ]; then
+     echo "ERROR: an interrupted rotation already saved $EXISTING as the key being replaced; nothing changed."
+     echo "If its replacement was encrypted and committed (step 6), resume at step 8. Otherwise revoke any unused new key (scripts/discard-credential.sh) and continue from step 4; rotating[$USER_EMAIL] still names the old key."
+     exit 1
+   fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
      def s: .rotating[$e] = $old;
      if .providers then .providers |= map(if .provider == $p then s else . end) else s end' \

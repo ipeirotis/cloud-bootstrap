@@ -197,9 +197,15 @@ fi
 # Creating without a role assignment is the default (--skip-assignment is obsolete).
 # The output holds the new client secret: write it private (0600) from the start.
 (umask 077 && az ad sp create-for-rbac --name "$SP_NAME" > credentials.json)
+# Add the secret's keyId (not secret; the new app has exactly one secret), so a
+# later rotation can find and revoke exactly this secret
+KEY_ID=$(az ad app credential list --id "$(jq -r .appId credentials.json)" --query '[0].keyId' -o tsv)
+[ -n "$KEY_ID" ] || { echo "ERROR: could not read the new secret's keyId; run Rollback a Failed Setup."; exit 1; }
+(umask 077 && jq --arg k "$KEY_ID" '. + {keyId: $k}' credentials.json > credentials.json.tmp) \
+  && mv credentials.json.tmp credentials.json
 ```
 
-This returns `appId`, `password` (client secret), and `tenant`. The credentials file is already in the right format.
+This returns `appId`, `password` (client secret), and `tenant`; the snippet adds the secret's `keyId`.
 
 If `az` is not available, use the Microsoft Graph API (requires `$GRAPH_TOKEN`):
 
@@ -261,14 +267,17 @@ APP_OBJECT_ID=$(jq -r '.id // empty' "$RESP_DIR/app.json")
   -H "Content-Type: application/json" \
   -d '{"passwordCredential": {"displayName": "claude-code"}}' > "$RESP_DIR/secret.json")
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
-[ -n "$SECRET" ] || { echo "ERROR: addPassword response lacks secretText."; false; }
+SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
+[ -n "$SECRET" ] && [ -n "$SECRET_KEY_ID" ] || { echo "ERROR: addPassword response lacks secretText or keyId."; false; }
 
-# Step 4: Assemble credentials
+# Step 4: Assemble credentials. keyId (not secret) names exactly this secret,
+# so a later rotation can find and revoke it.
 (umask 077 && jq -n \
   --arg appId "$APP_ID" \
   --arg password "$SECRET" \
   --arg tenant "$TENANT_ID" \
-  '{appId: $appId, password: $password, tenant: $tenant}' > credentials.json)
+  --arg keyId "$SECRET_KEY_ID" \
+  '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
 
 trap - ERR
 echo "Created application $SP_NAME (object id $APP_OBJECT_ID). Keep APP_OBJECT_ID until setup finishes."
