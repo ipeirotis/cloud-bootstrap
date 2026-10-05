@@ -55,6 +55,12 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        || { echo "ERROR: could not identify the bootstrap credentials' account; nothing created."; exit 1; }
      [ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
        || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing created."; exit 1; }
+     # AWS allows two access keys per user: the current one plus the new one.
+     # Old keys still queued in revoke_pending take those slots, so delete them
+     # first (step 9 without COMPROMISE: it never touches the current key)
+     NKEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'length(AccessKeyMetadata)' --output text) \
+       || { echo "ERROR: could not list $IAM_USER's keys; nothing created."; exit 1; }
+     [ "$NKEYS" -lt 2 ] || { echo "ERROR: $IAM_USER already has $NKEYS keys: run step 9 to delete the keys in revoke_pending first; nothing created."; exit 1; }
      (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json)
      # then reformat (access_key_id/secret_access_key/region) as in aws.md
      ```

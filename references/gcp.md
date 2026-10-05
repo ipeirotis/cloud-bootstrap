@@ -382,9 +382,50 @@ list_keys() { local R; R=$(curl -sS --fail -G "$KEYS_URL" --data-urlencode "keyT
   -H "Authorization: Bearer $TOKEN") && printf '%s' "$R" | jq -r '.keys[]?.name'; }
 KEYS_BEFORE=$(list_keys) || { echo "ERROR: could not list the account's keys; nothing created."; exit 1; }
 
+# Keys new since KEYS_BEFORE after an ambiguous outcome. Their private key
+# existed only in a response that never arrived, so nobody holds them and they
+# grant no access, but each takes one of the account's 10 slots. GCP keys carry
+# no owner label, so one may instead be a teammate's concurrent onboarding:
+# record the candidates for a person to check instead of deleting them.
+record_new_keys() {
+  local AFTER NEW NAME
+  AFTER=$(list_keys) || { echo "WARNING: could not list keys; compare them with the list before this call by hand."; return 1; }
+  # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
+  NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE" | sed '/^$/d') || true)
+  [ -n "$NEW" ] || return 0
+  if [ ! -f .cloud-config.json ]; then
+    # First-time setup: no teammate can be onboarding yet, and the setup
+    # rollback deletes the service account with every key on it
+    echo "Run Rollback a Failed Setup (it deletes $SA_EMAIL) before retrying."; return 0
+  fi
+  for NAME in $NEW; do
+    jq --arg id "$NAME" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \
+      '.unrevoked = ((.unrevoked // []) + [{provider: "gcp", id: $id, member: $m, ambiguous: true,
+         note: "may be an unused key from a failed create call, or a teammate'"'"'s key created at the same time", at: $t}])' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+  done
+  echo "Keys created since the request began (recorded as ambiguous under \"unrevoked\"; commit .cloud-config.json):"
+  printf '  %s\n' $NEW
+  echo "Delete each one that is not a teammate's (not in any key_ids entry once their onboarding is committed)."
+}
+
 # Check the HTTP status and validate the response before writing a key file,
 # so an error body is never decoded into credentials.json and encrypted.
 RESP=$(umask 077 && mktemp)
+# From the request until credentials.json is written, the key exists only in
+# RESP (outside the repo, where the interrupted-run check does not look): if
+# this shell is stopped, revoke the key named in a complete response, else
+# record the candidates. Afterwards a leftover credentials.json drives recovery.
+on_signal() {
+  local N; N=$(jq -r '.name // empty' "$RESP" 2>/dev/null)
+  if [ -n "$N" ]; then
+    CRED_ID="$N" TOKEN="${TOKEN:-}" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
+  else
+    record_new_keys
+  fi
+  rm -f "$RESP"; exit 1
+}
+trap on_signal INT TERM HUP
 # (if/else so the status is captured even under `set -e`)
 if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST "$KEYS_URL" \
   -H "Authorization: Bearer $TOKEN" \
@@ -393,46 +434,28 @@ if HTTP=$(curl -sS -o "$RESP" -w '%{http_code}' -X POST "$KEYS_URL" \
 case "$RC:$HTTP" in
   0:2??) ;;   # created
   0:4??)      # Google rejected the request: no key was created
+    trap - INT TERM HUP
     rm -f "$RESP"; echo "ERROR: key creation was rejected (HTTP $HTTP); no key was created."; exit 1 ;;
   *)          # a 5xx or a transport/local failure: a key may exist anyway
+    trap - INT TERM HUP
     rm -f "$RESP"
-    # Its private key exists only in the response that never arrived, so nobody
-    # holds it and it grants no access. It still takes one of the account's 10
-    # key slots. GCP keys carry no owner label, so a key new since KEYS_BEFORE
-    # may instead be a teammate's concurrent onboarding: record the candidates
-    # for a person to check instead of deleting them.
     echo "ERROR: key creation outcome unknown (curl exit $RC, HTTP ${HTTP:-none})."
-    AFTER=$(list_keys) || { echo "WARNING: could not list keys; compare them with the list before this call by hand."; exit 1; }
-    # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
-    NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE" | sed '/^$/d') || true)
-    if [ -n "$NEW" ] && [ ! -f .cloud-config.json ]; then
-      # First-time setup: no teammate can be onboarding yet, and the setup
-      # rollback deletes the service account with every key on it
-      echo "Run Rollback a Failed Setup (it deletes $SA_EMAIL) before retrying."
-    elif [ -n "$NEW" ]; then
-      for NAME in $NEW; do
-        jq --arg id "$NAME" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \
-          '.unrevoked = ((.unrevoked // []) + [{provider: "gcp", id: $id, member: $m, ambiguous: true,
-             note: "may be an unused key from a failed create call, or a teammate'"'"'s key created at the same time", at: $t}])' \
-          .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
-      done
-      echo "Keys created since the request began (recorded as ambiguous under \"unrevoked\"; commit .cloud-config.json):"
-      printf '  %s\n' $NEW
-      echo "Delete each one that is not a teammate's (not in any key_ids entry once their onboarding is committed)."
-    fi
+    record_new_keys
     exit 1 ;;
 esac
 # The key now exists at Google. Keep its resource name until the local file is
 # validated; on any local failure, delete the key so it is not left orphaned.
 KEY_NAME=$(jq -r '.name // empty' "$RESP")
-KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP"); rm -f "$RESP"
+KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP")
 discard_new_key() {   # deletes the key by its resource name; see scripts/discard-credential.sh
   CRED_ID="$KEY_NAME" TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
          bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
 }
-[ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; discard_new_key; exit 1; }
+[ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; rm -f "$RESP"; discard_new_key; exit 1; }
 (umask 077 && printf '%s' "$KEY_DATA" | base64 -d > credentials.json) \
-  || { echo "ERROR: could not decode the key."; discard_new_key; exit 1; }
+  || { echo "ERROR: could not decode the key."; rm -f "$RESP"; discard_new_key; exit 1; }
+# credentials.json now marks the run as unfinished for the next session
+trap - INT TERM HUP; rm -f "$RESP"
 jq -e '.type == "service_account" and .private_key' credentials.json >/dev/null \
   || { echo "ERROR: decoded key is not a service-account key."; discard_new_key; exit 1; }
 KEY_ID=$(jq -r .private_key_id credentials.json)

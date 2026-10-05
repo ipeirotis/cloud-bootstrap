@@ -6,7 +6,8 @@ The user's AWS account needs **IAM full access** or at minimum:
 - `iam:CreateGroup`, `iam:CreateUser`, `iam:AddUserToGroup`
 - `iam:CreateAccessKey`
 - `iam:AttachGroupPolicy` / `iam:PutGroupPolicy`
-- for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:ListAttachedGroupPolicies`, `iam:ListGroupPolicies`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
+- for rolling back a failed setup: `iam:ListAccessKeys`, `iam:DeleteAccessKey`, `iam:RemoveUserFromGroup`, `iam:DeleteUser`, `iam:ListGroupsForUser`, `iam:ListAttachedGroupPolicies`, `iam:ListGroupPolicies`, `iam:DetachGroupPolicy`, `iam:DeleteGroupPolicy`, `iam:DeleteGroup`
+- for credential rotation (which uses the same bootstrap credentials) and its cleanup: `iam:GetAccessKeyLastUsed`, `iam:GetUser`, plus `iam:CreateAccessKey`, `iam:ListAccessKeys`, `iam:DeleteAccessKey` above
 
 ## Team Member Prerequisites (Adding to Existing Setup)
 
