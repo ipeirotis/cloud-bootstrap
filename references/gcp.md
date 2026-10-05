@@ -197,11 +197,13 @@ ROLE="roles/ROLE_NAME"
 MEMBER="serviceAccount:claude-agent@$PROJECT_ID.iam.gserviceaccount.com"
 
 # Get the current IAM policy, including etag, version, and auditConfigs
-curl -sS --fail -X POST \
+if ! curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:getIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"options": {"requestedPolicyVersion": 3}}' > /tmp/policy.json
+  -d '{"options": {"requestedPolicyVersion": 3}}' > /tmp/policy.json; then
+  rm -f /tmp/policy.json; echo "ERROR: getIamPolicy failed; role $ROLE not granted."; exit 1
+fi
 
 # Add the member to the unconditional binding for ROLE (or create it),
 # keeping every other field of the fetched policy untouched
@@ -212,16 +214,23 @@ jq --arg r "$ROLE" --arg m "$MEMBER" '
     then .bindings |= map(if .role == $r and .condition == null
                           then .members = ((.members + [$m]) | unique) else . end)
     else .bindings += [{role: $r, members: [$m]}] end
-  | {policy: .}' /tmp/policy.json > /tmp/new-policy.json
+  | {policy: .}' /tmp/policy.json > /tmp/new-policy.json \
+  || { rm -f /tmp/policy.json /tmp/new-policy.json; echo "ERROR: could not build the new policy."; exit 1; }
 
 # Write it back; a 409 (etag mismatch) means someone else changed the policy:
-# re-run both steps rather than forcing the write
-curl -sS --fail -X POST \
+# re-run both steps rather than forcing the write. Stop on any failure, so setup
+# never goes on to create a key for an account missing an approved role.
+if curl -sS --fail -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:setIamPolicy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d @/tmp/new-policy.json
-rm -f /tmp/policy.json /tmp/new-policy.json
+  -d @/tmp/new-policy.json; then
+  rm -f /tmp/policy.json /tmp/new-policy.json
+else
+  rm -f /tmp/policy.json /tmp/new-policy.json
+  echo "ERROR: setIamPolicy failed (409 = concurrent change: re-run from getIamPolicy); role $ROLE not granted."
+  exit 1
+fi
 ```
 
 **Important:** Merge new bindings with existing ones. Do not overwrite the entire policy.

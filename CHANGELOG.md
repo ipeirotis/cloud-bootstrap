@@ -22,7 +22,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - AWS bootstrap: `get-session-token` passes MFA (`--serial-number`, `--token-code`), without which its credentials cannot call IAM; the credential handoff uses `aws configure export-credentials`; IAM user names map every disallowed character to `-` and cap at 64 characters with a hash suffix (ordinary emails keep their old names); Add Team Member creates a new IAM user in the group, since access keys belong to users.
 - Azure: the bootstrap snippet prints the ARM and Graph tokens; `--skip-assignment` (obsolete) is gone; role grants use the subscription ID from setup step 2 before `.cloud-config.json` exists; the REST path collects the tenant ID before creating anything, uses `curl --fail` with field checks, and deletes a half-created application on failure; role assignments get a GUID without needing `uuidgen`.
 - GCP: key creation fails on HTTP errors and validates the key before encrypting; the smoke test mints a token instead of `gcloud projects describe` (which needs the Cloud Resource Manager API); first-time prerequisites include Service Account Key Admin, which holds `iam.serviceAccountKeys.create`.
-- All standalone and multi-provider hooks run the per-file 180-day age check.
+- All standalone and multi-provider hooks run the per-file 180-day age check; the multi-provider fallback reads each provider's own `created_at`.
+- Snippets stop on the first failed mutation: AWS `create-user` (a taken name would hand the member another member's identity), GCP `getIamPolicy`/`setIamPolicy`, and the Azure name-collision lookups (a failed lookup is not "no collision").
 - First-time setup writes the Cloud Credentials section to `CLAUDE.md` or `AGENTS.md`, whichever the repo uses; uninstall removes it from either.
 
 ## [1.4.0] - 2026-04-10

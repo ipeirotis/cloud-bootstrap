@@ -166,8 +166,13 @@ REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)")
 SP_NAME="claude-agent-${REPO_SLUG}"
 # create-for-rbac can modify an existing application OR service principal with
 # this display name, so both collections must be empty.
-if [ -n "$(az ad sp list --display-name "$SP_NAME" --query '[].appId' -o tsv)" ] \
-   || [ -n "$(az ad app list --display-name "$SP_NAME" --query '[].appId' -o tsv)" ]; then
+# A failed lookup (expired login, no directory read access, API error) is not
+# "no collision": stop unless both lookups succeed AND both come back empty.
+SP_HITS=$(az ad sp list --display-name "$SP_NAME" --query '[].appId' -o tsv) \
+  || { echo "ERROR: service-principal lookup failed; cannot check for a name collision."; exit 1; }
+APP_HITS=$(az ad app list --display-name "$SP_NAME" --query '[].appId' -o tsv) \
+  || { echo "ERROR: application lookup failed; cannot check for a name collision."; exit 1; }
+if [ -n "$SP_HITS" ] || [ -n "$APP_HITS" ]; then
   echo "ERROR: an application or service principal named $SP_NAME already exists; choose another name with the user."
   exit 1
 fi

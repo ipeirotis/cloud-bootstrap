@@ -104,7 +104,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
   # Per-file credential age, as in the Authenticate workflow
   COMMIT_TS=$(git log -1 --format=%ct -- "$ENC_FILE" 2>/dev/null || true)
   if [ -z "$COMMIT_TS" ]; then
-    COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' "$CONFIG")" +%s 2>/dev/null || true)
+    COMMIT_TS=$(date -d "$(jq -r ".providers[$i].created_at // .created_at // empty" "$CONFIG")" +%s 2>/dev/null || true)
   fi
   if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
     echo "NOTE: $PROVIDER credentials in $ENC_FILE are over 180 days old — consider rotating (see Credential Rotation)."

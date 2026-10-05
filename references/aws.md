@@ -205,15 +205,18 @@ fi
 # Create the shared group
 aws iam create-group --group-name claude-agents
 
-# Create the user and add to group
-aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+# Create the user and add to group; stop at the first failure
+if ! aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"; then
+  echo "ERROR: could not create IAM user claude-agent-${SANITIZED_EMAIL} (it may already exist); stop and resolve with the user."
+  exit 1
+fi
 aws iam add-user-to-group \
   --group-name claude-agents \
-  --user-name "claude-agent-${SANITIZED_EMAIL}"
+  --user-name "claude-agent-${SANITIZED_EMAIL}" || exit 1
 
 # Create access key
-aws iam create-access-key \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
+(umask 077 && aws iam create-access-key \
+  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json) || { rm -f credentials.json; exit 1; }
 ```
 
 Reformat `credentials.json` to a clean structure before encrypting:
@@ -247,15 +250,20 @@ fi
 # the repo's permissions.
 GROUP_NAME=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .service_account) else .service_account end) // "claude-agents"' .cloud-config.json 2>/dev/null)
 
-# Create user and add to the existing group
-aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"
+# Create user and add to the existing group. Stop unless create-user succeeds:
+# EntityAlreadyExists (409) means another member's email normalized to the same
+# name, and continuing would hand this member that member's identity.
+if ! aws iam create-user --user-name "claude-agent-${SANITIZED_EMAIL}"; then
+  echo "ERROR: could not create IAM user claude-agent-${SANITIZED_EMAIL} (it may already exist); stop and resolve with the user."
+  exit 1
+fi
 aws iam add-user-to-group \
   --group-name "$GROUP_NAME" \
-  --user-name "claude-agent-${SANITIZED_EMAIL}"
+  --user-name "claude-agent-${SANITIZED_EMAIL}" || exit 1
 
 # Create access key
-aws iam create-access-key \
-  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json
+(umask 077 && aws iam create-access-key \
+  --user-name "claude-agent-${SANITIZED_EMAIL}" > credentials.json) || { rm -f credentials.json; exit 1; }
 
 # Reformat — read region from existing config. In multi-provider mode the
 # region lives inside the matching providers[] entry, not at the top level.
