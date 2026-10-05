@@ -303,12 +303,12 @@ Roles are assigned to the **service principal**, so they apply to all team membe
 # the credentials you just created; in later sessions read it from config.
 APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 # Provider-aware fallback: in multi-provider configs the app id is in providers[]
-APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
 
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
@@ -327,11 +327,11 @@ Or via REST API (requires `$ARM_TOKEN` and `$GRAPH_TOKEN`):
 # appId, or the assignment is created against an empty/incorrect principal.
 APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 # Provider-aware fallback: in multi-provider configs the app id is in providers[]
-APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
 SP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
   --data-urlencode "\$filter=appId eq '$APP_ID'" \
@@ -377,7 +377,7 @@ When a new team member joins, create a new client secret for the existing app. R
 # Resolve and validate everything BEFORE creating a secret, so a bad config
 # never leaves a live secret behind (provider-aware: in multi-provider mode
 # these live in the matching providers[] entry).
-azcfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"azure\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+azcfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"azure\") | .$1) else (select(.provider==\"azure\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 APP_ID=$(azcfg service_account)
 TENANT_ID="${TENANT_ID:-$(azcfg tenant)}"
 [ -n "$APP_ID" ] || { echo "ERROR: no Azure service_account (appId) in .cloud-config.json."; exit 1; }
@@ -400,7 +400,11 @@ USER_EMAIL=$(git config user.email)
   -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}" \
   > secret.json) || { rm -f secret.json; echo "ERROR: addPassword failed; no secret was created."; exit 1; }
 SECRET=$(jq -r '.secretText // empty' secret.json)
-[ -n "$SECRET" ] || { rm -f secret.json; echo "ERROR: addPassword response has no secretText."; exit 1; }
+# Keep the new secret's keyId: removePassword needs it if a later step fails
+NEW_SECRET_KEY_ID=$(jq -r '.keyId // empty' secret.json)
+[ -n "$SECRET" ] && [ -n "$NEW_SECRET_KEY_ID" ] \
+  || { rm -f secret.json; echo "ERROR: addPassword response has no secretText or keyId."; exit 1; }
+echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
 
 # Assemble credentials (appId and tenant are the same for all team members)
 (umask 077 && jq -n \
@@ -419,7 +423,7 @@ rm -f secret.json
 Resolve the application first (later sessions have no `OBJECT_ID` in scope), then list its client secrets (requires `$GRAPH_TOKEN`):
 
 ```bash
-APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else .service_account end) // empty' .cloud-config.json)
+APP_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json)
 OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
   --data-urlencode "\$filter=appId eq '$APP_ID'" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty')
@@ -459,7 +463,7 @@ az login --service-principal \
 
 # Provider-aware subscription: in multi-provider repos the subscription id is in
 # the matching providers[] entry, not at top-level .project_id.
-az account set --subscription "$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else .project_id end)' .cloud-config.json)" \
+az account set --subscription "$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end)' .cloud-config.json)" \
   || { az logout; rm -f /tmp/credentials.json; echo "ERROR: could not select the configured subscription."; exit 1; }
 
 rm -f /tmp/credentials.json

@@ -14,13 +14,14 @@ When a second provider is added, convert `.cloud-config.json` from a single-prov
       "project_id": "my-gcp-project",
       "service_account": "claude-agent@my-gcp-project.iam.gserviceaccount.com",
       "roles": ["roles/storage.objectAdmin"],
+      "key_ids": {"alice@example.com": "0123456789abcdef0123456789abcdef01234567"},
       "created_at": "2025-03-15T10:00:00Z"
     },
     {
       "provider": "aws",
       "project_id": "123456789012",
-      "service_account": "claude-agents-my-repo",
-      "iam_user_prefix": "claude-agent-my-repo",
+      "service_account": "claude-agents-my-repo-3f9a1c",
+      "iam_user_prefix": "claude-agent-my-repo-3f9a1c",
       "roles": ["AmazonS3FullAccess"],
       "created_at": "2025-03-16T14:00:00Z"
     }
@@ -44,7 +45,8 @@ If `.cloud-config.json` has a top-level `provider` field (single-provider format
 
 1. Read the existing single-provider config and the new provider's reference file.
 2. **Provision the new provider** exactly as First-Time Setup does for it: resolve that provider's encryption key first (stop if missing), propose roles and get the user's approval, get its bootstrap token, create the identity, grant only the approved roles, generate its credentials, and encrypt them to `.cloud-credentials.<new-provider>.<email>.enc`. Delete the plaintext immediately.
-3. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one (each with its own `roles` and `created_at`).
+   Until step 3, `.cloud-config.json` still describes only the old provider, and the reference snippets read config only for an entry whose `provider` matches, so they find nothing for the new one. Set the new provider's identifiers at the top of every snippet you run, since each snippet may run in a fresh shell: GCP `PROJECT_ID` and `SA_EMAIL`; AWS `GROUP_NAME`, `USER_PREFIX`, and `AWS_REGION`; Azure `SUBSCRIPTION_ID`, `TENANT_ID`, and `APP_ID`. Keep them for step 3.
+3. Rewrite `.cloud-config.json` to the `providers` array format, with one entry for the existing provider and one for the new one (each with its own `roles` and `created_at`; for a new GCP entry, also its `key_ids`).
 4. Rename existing `.cloud-credentials.<email>.enc` files to `.cloud-credentials.<provider>.<email>.enc` with `git mv`, in a commit that changes nothing else about them. The hooks' age check reads `git log --follow --diff-filter=AM`, which follows the rename and ignores it, so a migrated key keeps its real age.
 5. Replace `.claude/hooks/cloud-auth.sh` with the multi-provider hook below.
 6. Verify each provider's credentials with its smoke test, then commit all changes together.

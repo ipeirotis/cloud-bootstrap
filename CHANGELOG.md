@@ -17,7 +17,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - SKILL.md rules: IAM changes happen only inside approved setup steps, with user-approved roles and a user-supplied bootstrap token; pasted bootstrap tokens are the designed handoff and are never stored or echoed.
 
 ### Changed
-- AWS IAM names are scoped to the repository (`claude-agents-<repo>`, `claude-agent-<repo>-<email>`), since IAM names are unique per account: two repos in one account no longer collide or share a group. Setup records the group (`service_account`) and the new `iam_user_prefix` in `.cloud-config.json`; every workflow derives names through one `iam_user_name` helper. Configs without `iam_user_prefix` keep the pre-1.5 names, unchanged.
+- AWS IAM names are scoped to the repository (`claude-agents-<repo>-<suffix>`, `claude-agent-<repo>-<suffix>-<email>`, with a random suffix chosen at setup), since IAM names are unique per account: two repos in one account, even with the same directory name, no longer collide or share a group. Setup records the group (`service_account`) and the new `iam_user_prefix` in `.cloud-config.json`; every workflow derives names through one `iam_user_name` helper. Configs without `iam_user_prefix` keep the pre-1.5 names, unchanged.
 
 ### Fixed
 - `install.sh` / `update.sh`: download every file with `curl --fail` into a temp dir and install only if all succeed; commit only the skill directory; skip the commit when nothing changed. `update.sh` reads its confirmation from the terminal (stdin is the script under `curl | bash`) and, with no terminal, requires `--yes`.
@@ -40,7 +40,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP hooks (standalone and multi-provider) confirm that the configured project was selected and otherwise log the account out, instead of leaving an earlier cached project active.
 - GCP keys are recorded per member in a non-secret `key_ids` map in `.cloud-config.json` (setup, Add Team Member, rotation), so offboarding can find a departed member's key; key deletion fails on HTTP errors and removes the member's `.enc` and map entry only after Google confirms.
 - Rotation retries GCP replacement-key verification with backoff (new keys can take a minute to work) and, on final failure, deletes the unverified key and its plaintext.
-- AWS Add Team Member rolls back the user, membership, and keys it created on failure; the prerequisite lists include the IAM actions rollback needs.
+- Rotation keeps the old GCP key ID in `revoke_pending` until Google confirms its deletion; AWS verification retries with backoff and deletes the new access key on final failure; Azure verification failure removes the new secret by the `keyId` that Add Client Secret now keeps.
+- Config lookups use top-level fields only when the top-level `provider` matches, so while a second provider is provisioned the snippets never pick up the first provider's project or identity; the migration steps say which values to set.
+- AWS Add Team Member has a standalone rollback snippet for failures in a later shell. AWS Add Team Member rolls back the user, membership, and keys it created on failure; the prerequisite lists include the IAM actions rollback needs.
 - Azure CLI setup writes `credentials.json` under `umask 077`; the role-grant snippets read the app id from the `providers[]` entry in multi-provider configs.
 - Azure Add Team Member validates the tenant and resolves the application before `addPassword`, fails on HTTP errors, and requires `secretText`; Secret Management resolves the application itself and deletes a member's `.enc` only after `removePassword` returns 204.
 - Key Limits no longer claims unlimited client secrets: entries count against a shared per-application manifest limit, so add-member lists existing secrets and prunes first.

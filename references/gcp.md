@@ -218,7 +218,7 @@ ROLE="roles/ROLE_NAME"
 # Bind to the account setup actually created (SA_EMAIL from Create Service
 # Account), or in a later session the one recorded in config; never a
 # hard-coded name, which could be a different, pre-existing account.
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$SA_EMAIL" ] || { echo "ERROR: SA_EMAIL is not set; run Create Service Account first."; exit 1; }
 MEMBER="serviceAccount:$SA_EMAIL"
 
@@ -273,8 +273,8 @@ This command works for both first-time setup and adding new team members. Each c
 # multi-provider repos these live inside the matching providers[] entry).
 # add-team-member/rotation reuse this snippet with no first-time vars in scope,
 # so PROJECT_ID must be resolved here too, not assumed.
-PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 
 # Fail on HTTP errors and validate the response before writing a key file, so
@@ -314,15 +314,15 @@ List existing keys (useful if approaching the 10-key limit). Resolve the
 configured service account first (do not hard-code `claude-agent`):
 
 ```bash
-PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else .service_account end) // empty' .cloud-config.json 2>/dev/null)}"
+PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-claude-agent@$PROJECT_ID.iam.gserviceaccount.com}"
 curl -X GET \
   "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess.
+Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` entry names an old key a rotation could not delete yet; delete it the same way (Credential Rotation step 9).
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -360,7 +360,7 @@ ADC_KEY="/tmp/gcp-adc-credentials.json"   # decrypted here, never committed
   -pass stdin -in "$ENC_FILE" -out "$ADC_KEY")
 gcloud auth activate-service-account --key-file="$ADC_KEY"
 # Provider-aware project: in multi-provider repos project_id is in providers[].
-gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else .project_id end)' .cloud-config.json)"
+gcloud config set project "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end)' .cloud-config.json)"
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
 # If running outside the same shell, persist via $CLAUDE_ENV_FILE (see hook).
 ```

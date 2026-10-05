@@ -18,8 +18,8 @@ The user's AWS account needs:
 ## Multi-User Strategy
 
 AWS allows only **2 access keys per IAM user**, which is too few for team sharing. Instead, this skill creates:
-- An **IAM group** (`claude-agents-<repo>`) with the shared policies attached
-- A **separate IAM user per team member** (`claude-agent-<repo>-<sanitized-email>`) added to that group
+- An **IAM group** (`claude-agents-<repo>-<suffix>`) with the shared policies attached
+- A **separate IAM user per team member** (`claude-agent-<repo>-<suffix>-<email>`) added to that group
 
 Both names include the repository, because IAM group and user names must be unique within an AWS account: two repositories bootstrapped in one account must neither collide nor share a group (which would mix their policies). See "IAM Names" below.
 
@@ -191,7 +191,7 @@ Use the AWS CLI (`aws`) if available in the environment. Otherwise, use signed A
 
 ## IAM Names
 
-First-Time Setup derives the group name and the user-name prefix from the repository and records them in `.cloud-config.json`: `service_account` holds the group, `iam_user_prefix` the user prefix. Every later workflow reads them back, so all members of one repo share one group and no two repos collide. Configs written before 1.5.0 have no `iam_user_prefix`; for them the snippets fall back to the old names (`claude-agents`, `claude-agent-<email>`), so existing users keep working. The user name is the prefix plus the email: IAM user names allow `.` and `@`, so a plain email is used unchanged, and an email with any other character, or a name over IAM's 64-character limit, gets a hash of the email as suffix, so distinct emails never map to one user. (The pre-1.5.0 names replaced `.` and `@` with `-`; that rule is kept only for the old `claude-agent` prefix.)
+First-Time Setup derives the group name and the user-name prefix from the repository name plus a random suffix (two repos with the same directory name in one account must not collide) and records them in `.cloud-config.json`: `service_account` holds the group, `iam_user_prefix` the user prefix. Every later workflow reads them back, so all members of one repo share one group and no two repos collide. Configs written before 1.5.0 have no `iam_user_prefix`; for them the snippets fall back to the old names (`claude-agents`, `claude-agent-<email>`), so existing users keep working. The user name is the prefix plus the email: IAM user names allow `.` and `@`, so a plain email is used unchanged, and an email with any other character, or a name over IAM's 64-character limit, gets a hash of the email as suffix, so distinct emails never map to one user. (The pre-1.5.0 names replaced `.` and `@` with `-`; that rule is kept only for the old `claude-agent` prefix.)
 
 ## First-Time Setup: Create Group and First User
 
@@ -202,7 +202,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 export AWS_SESSION_TOKEN="..."
 
 # Repo-scoped IAM names (see "IAM Names" above)
-aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
   local h n
   h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
@@ -221,9 +221,17 @@ iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 charact
 }
 
 USER_EMAIL=$(git config user.email)
-REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-24)
-GROUP_NAME="claude-agents-${REPO_SLUG}"
-USER_PREFIX="claude-agent-${REPO_SLUG}"
+# Repo name plus a random suffix, so repos sharing a directory name in one
+# account get distinct names. Keep values already set (a rerun, or names the
+# user chose) and print them: later snippets of this setup need the same names
+# until .cloud-config.json records them.
+if [ -z "$GROUP_NAME" ] || [ -z "$USER_PREFIX" ]; then
+  REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-16)
+  SUFFIX=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
+  GROUP_NAME="${GROUP_NAME:-claude-agents-${REPO_SLUG}-${SUFFIX}}"
+  USER_PREFIX="${USER_PREFIX:-claude-agent-${REPO_SLUG}-${SUFFIX}}"
+fi
+echo "IAM names for this setup: GROUP_NAME=$GROUP_NAME USER_PREFIX=$USER_PREFIX (keep them until setup finishes)"
 IAM_USER=$(iam_user_name "$USER_EMAIL" "$USER_PREFIX")
 
 # Undo whatever this block created, so a failed run leaves nothing that would
@@ -283,7 +291,7 @@ If a later setup step fails (attaching a policy, encrypting, committing), undo t
 
 ```bash
 # Repo-scoped IAM names (see "IAM Names" above)
-aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
   local h n
   h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
@@ -337,7 +345,7 @@ aws iam add-user-to-group --group-name "$GROUP_NAME" --user-name "$IAM_USER" \
 
 # Reformat — read region from existing config. In multi-provider mode the
 # region lives inside the matching providers[] entry, not at the top level.
-AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .region) else .region end) // "us-east-1"' .cloud-config.json 2>/dev/null)
+AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws") | .region) else (select(.provider=="aws") | .region) end) // "us-east-1"' .cloud-config.json 2>/dev/null)
 cat credentials.json | jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
@@ -346,17 +354,30 @@ cat credentials.json | jq --arg region "$AWS_REGION" '{
 mv credentials_clean.json credentials.json
 ```
 
-If a later step fails (encrypting, committing), run `rollback_member` from the same shell before retrying.
+If a later step fails (encrypting, committing), roll the member back before retrying. This snippet stands alone, so it works from a fresh shell:
+
+```bash
+# Repo-scoped IAM names (see "IAM Names" above): define aws_cfg and
+# iam_user_name as in the snippet above first
+GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
+USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
+IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
+for k in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"
+done
+aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER"
+aws iam delete-user --user-name "$IAM_USER" && rm -f credentials.json
+```
 
 ## Grant Roles (Attach Policies to Group)
 
-Policies are attached to the **group**, not individual users. This way all team members share the same permissions. Each snippet below derives the group itself, because it may run in a fresh shell and, during first-time setup, before `.cloud-config.json` exists. Run this first in the same snippet:
+Policies are attached to the **group**, not individual users. This way all team members share the same permissions. Each snippet below resolves the group itself, because it may run in a fresh shell. During first-time setup `.cloud-config.json` does not exist yet, so set `GROUP_NAME` to the name First-Time Setup printed. Run this first in the same snippet:
 
 ```bash
-aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
-# Configured group, else the one First-Time Setup derives for this repo
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
+# The group First-Time Setup printed, else the configured one
 GROUP_NAME="${GROUP_NAME:-$(aws_cfg service_account)}"
-GROUP_NAME="${GROUP_NAME:-claude-agents-$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-24)}"
+[ -n "$GROUP_NAME" ] || { echo "ERROR: set GROUP_NAME to the group First-Time Setup created."; exit 1; }
 ```
 
 For AWS managed policies:
@@ -428,7 +449,7 @@ If this fails, the credentials may be expired or revoked. Re-run the **Authentic
 List users in the group:
 
 ```bash
-aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 aws iam get-group --group-name "$GROUP_NAME"
 ```
@@ -437,7 +458,7 @@ Remove a team member (if they leave):
 
 ```bash
 # Repo-scoped IAM names (see "IAM Names" above)
-aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else .$1 end) // empty" .cloud-config.json 2>/dev/null; }
+aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 characters
   local h n
   h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
