@@ -52,8 +52,12 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    clear_prior() {
      case "$PROVIDER" in
        gcp)
-         A=$(jq -r '.client_email // empty' /tmp/gcp-adc-credentials.json 2>/dev/null || true)
-         [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
+         # The account the ADC copy names, and every cached service account
+         # (the copy may be missing while gcloud's credential store survives)
+         for A in "$(jq -r '.client_email // empty' /tmp/gcp-adc-credentials.json 2>/dev/null || true)" \
+             $(gcloud auth list --format='value(account)' 2>/dev/null | grep -E '\.gserviceaccount\.com$'); do
+           [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
+         done
          rm -f /tmp/gcp-adc-credentials.json
          # An ambient access token outranks gcloud's account (see
          # references/gcp.md): clear it too, or later commands keep running

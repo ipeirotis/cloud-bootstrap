@@ -492,6 +492,25 @@ if [ -n "$APP_OBJECT_ID" ]; then
        && APP_KIDS=$(printf '%s' "$R" | jq -er '[.passwordCredentials[].keyId] | join(" ")'); then
       HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
         -H "Authorization: Bearer $GRAPH_TOKEN")
+      # Entra replicates a new application with a delay, so a 404 shortly
+      # after creation may not mean it is gone: the absence must hold for
+      # about a minute, and an application that reappears is deleted again
+      if [ "$HTTP" = 404 ]; then
+        for D in 20 20 20; do
+          sleep "$D"
+          G=$(curl -sS -o /dev/null -w '%{http_code}' "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+            -H "Authorization: Bearer $GRAPH_TOKEN")
+          [ "$G" = 404 ] && continue
+          if [ "$G" = 200 ]; then
+            HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+              -H "Authorization: Bearer $GRAPH_TOKEN")
+            [ "$HTTP" != 404 ] || HTTP="404 after reappearing"
+          else
+            HTTP="$G (lookup)"
+          fi
+          break
+        done
+      fi
       case "$HTTP" in
         204|404) echo "Application ${SP_NAME:-$APP_OBJECT_ID} is deleted." ;;
         *) RB_OK=0; echo "WARNING: could not delete application $APP_OBJECT_ID (HTTP $HTTP)." ;;

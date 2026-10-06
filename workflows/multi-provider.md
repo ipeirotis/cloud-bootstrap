@@ -86,7 +86,10 @@ clear_prior_gcp() {
     command -v "$G" >/dev/null 2>&1 || continue
     # The earlier account (named by the ADC copy) and one this run activated
     # before failing (GCP_NEW_SA: its ADC copy may never have been written)
-    for A in "$(jq -r '.client_email // empty' "$K" 2>/dev/null)" "${GCP_NEW_SA:-}"; do
+    # (and every cached service account: the ADC copy may be missing or
+    # truncated while gcloud's credential store survives)
+    for A in "$(jq -r '.client_email // empty' "$K" 2>/dev/null)" "${GCP_NEW_SA:-}" \
+        $("$G" auth list --format='value(account)' 2>/dev/null | grep -E '\.gserviceaccount\.com$'); do
       [ -z "$A" ] || "$G" auth revoke "$A" >/dev/null 2>&1 || true
     done
     break
