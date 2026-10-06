@@ -52,7 +52,7 @@ Key concepts:
 ## Versioning
 
 - The canonical version lives in `VERSION` (single line, semver).
-- `SKILL.md` frontmatter carries a `version:` field that must match `VERSION`.
+- `SKILL.md` frontmatter carries the version as `metadata.version` (quoted; a top-level `version:` key fails skill validation), and it must match `VERSION`.
 - When making user-facing changes, bump the version in both places and add a new entry to `CHANGELOG.md`.
 - Use semver: patch for fixes, minor for new features, major for breaking changes.
 

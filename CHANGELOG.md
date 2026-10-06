@@ -163,6 +163,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - `install.sh` and `update.sh` also require `scripts/discard-credential.sh` and every workflow or reference file `SKILL.md` names, present and non-empty, before replacing the skill.
 - Uninstall removes only SessionStart hooks that run `cloud-auth.sh` directly, not commands that pass its path to another program.
 - AWS Add Team Member's post-creation rollback is "Rollback a Failed Setup" (bound to the `member_only` record) instead of a standalone snippet that rebuilt the user name from the current git email.
+- `SKILL.md` carries its version as `metadata.version`: a top-level `version` key fails the skill frontmatter validation. `update.sh` reads either form from an installed copy.
+- The `SKILL.md` description is shortened below the 1024-character frontmatter limit, with the same triggers.
 
 ## [1.4.0] - 2026-04-10
 

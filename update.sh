@@ -27,7 +27,8 @@ INSTALLED_VERSION=""
 if [ -f "$DEST/VERSION" ]; then
   INSTALLED_VERSION=$(tr -d '[:space:]' < "$DEST/VERSION")
 elif [ -f "$DEST/SKILL.md" ]; then
-  INSTALLED_VERSION=$(grep -m1 '^version:' "$DEST/SKILL.md" 2>/dev/null | awk '{print $2}' || true)
+  # Older releases have a top-level version:, newer ones metadata.version
+  INSTALLED_VERSION=$(grep -m1 -E '^[[:space:]]*version:' "$DEST/SKILL.md" 2>/dev/null | awk '{print $2}' | tr -d '"' || true)
 fi
 
 if [ -z "$INSTALLED_VERSION" ]; then

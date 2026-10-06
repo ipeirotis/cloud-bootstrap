@@ -1,27 +1,24 @@
 ---
 name: cloud-bootstrap
-version: 1.5.0
+metadata:
+  version: "1.5.0"
 description: >-
-  Manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored
-  directly in a repo so they persist across Claude Code sessions.
+  Manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
+  repo so they persist across Claude Code sessions.
 
-  TRIGGER when the user says any of these: "set up cloud credentials",
-  "configure cloud access", "connect to GCP/AWS/Azure", "bootstrap cloud",
-  "add cloud provider", "rotate credentials", "fix cloud auth", "my cloud
-  command failed", "set up a service account", "encrypt credentials",
-  "store credentials in the repo", "authenticate to the cloud", or
-  "add a team member to cloud access". Also trigger when you detect
-  .cloud-config.json or .cloud-credentials.*.enc files in the repo, or
-  when a cloud CLI command fails with an authentication or permission error
-  (401, 403, "not authenticated", "access denied", "could not refresh
-  access token", "InvalidIdentityToken", "AADSTS700024").
+  TRIGGER when the user asks to set up, configure, connect, bootstrap, add,
+  rotate, fix or encrypt cloud credentials or a service account ("connect to
+  GCP/AWS/Azure", "my cloud command failed"), to store credentials in the
+  repo, to authenticate to the cloud, or to add a team member to cloud
+  access. Also trigger on .cloud-config.json or .cloud-credentials.*.enc
+  files in the repo, or when a cloud CLI command fails with an
+  authentication or permission error (401, 403, "not authenticated",
+  "access denied", "could not refresh access token", "InvalidIdentityToken",
+  "AADSTS700024").
 
-  DO NOT TRIGGER for general cloud questions ("what is a VPC?", "explain
-  IAM roles"), SDK or API usage ("how do I call the S3 API in Python?",
-  "write a Cloud Function"), Terraform or IaC questions, or cloud tasks
-  where credentials are already working and authenticated. Only invoke
-  this skill when credential setup, encryption, decryption, rotation, or
-  repair is actually needed.
+  DO NOT TRIGGER for general cloud questions, SDK or API usage, Terraform or
+  IaC, or cloud tasks whose credentials already work. Invoke only when
+  credential setup, encryption, decryption, rotation or repair is needed.
 ---
 
 # Cloud Bootstrap
