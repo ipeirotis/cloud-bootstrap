@@ -354,8 +354,17 @@ Undo a first-time setup or provider addition that did not finish. Run it from an
 
 ```bash
 PENDING=.cloud-setup-pending.json
-PROJECT_ID="${PROJECT_ID:-$(jq -r 'select(.provider == "gcp") | .project_id // empty' "$PENDING" 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r 'select(.provider == "gcp") | .service_account // empty' "$PENDING" 2>/dev/null)}"
+# With a record, its identity wins: a value left in the shell by another
+# operation must match it or be unset (shell values are used only without one)
+HAVE_REC=$(jq -r 'select(.provider == "gcp") | "yes"' "$PENDING" 2>/dev/null)
+pick() {   # $1 = variable, $2 = the record's value
+  [ -n "$HAVE_REC" ] || return 0
+  [ -z "${!1:-}" ] || [ "${!1}" = "$2" ] \
+    || { echo "ERROR: $1 is ${!1}, but $PENDING names ${2:-none}; nothing changed. Unset $1."; exit 1; }
+  printf -v "$1" '%s' "$2"
+}
+pick PROJECT_ID "$(jq -r 'select(.provider == "gcp") | .project_id // empty' "$PENDING" 2>/dev/null)"
+pick SA_EMAIL "$(jq -r 'select(.provider == "gcp") | .service_account // empty' "$PENDING" 2>/dev/null)"
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (no GCP entry in $PENDING)."; exit 1; }
 # An unconfirmed record (a create call failed, then a chosen ID turned up)
 # may name another setup's account: touch it only once a person confirms

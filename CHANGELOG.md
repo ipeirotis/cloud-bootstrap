@@ -149,6 +149,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - `update.sh` drops symlinks at managed paths (or their parent directories) in the staged copy before removing stale files and overlaying the release, so neither step writes through a link to a file outside the skill.
 - GCP setup marks the setup record `ambiguous` when a failed create is followed by a chosen service-account ID turning up, and the rollback then requires `CONFIRM_SA=1`; if the mark cannot be written, the record is removed instead.
 - Azure Add Team Member uses the configured tenant and stops when a different `TENANT_ID` is set in the shell.
+- Every "Rollback a Failed Setup" (GCP, AWS, Azure REST and CLI) takes the identity from `.cloud-setup-pending.json` when it exists and stops if a value left in the shell disagrees; shell values are used only without a record.
 
 ## [1.4.0] - 2026-04-10
 

@@ -387,15 +387,24 @@ The trap above only covers this block: the agent may run each snippet in its own
 ```bash
 # Delete the application created above (this removes its service principal and
 # client secrets) after its role assignments, and the local plaintext. Works
-# from any shell: the application is found from APP_OBJECT_ID or SP_NAME if
-# set, else from .cloud-setup-pending.json, else from the appId in a leftover
-# credentials.json. Needs GRAPH_TOKEN, plus ARM_TOKEN for role assignments.
+# from any shell: the application is found from .cloud-setup-pending.json,
+# else (no record) from APP_OBJECT_ID, APP_ID or SP_NAME, else from the appId in
+# a leftover credentials.json. Needs GRAPH_TOKEN, plus ARM_TOKEN for role
+# assignments.
 PENDING=.cloud-setup-pending.json
 pend() { jq -r --arg k "$1" 'select(.provider == "azure") | .[$k] // empty' "$PENDING" 2>/dev/null; }
-APP_OBJECT_ID="${APP_OBJECT_ID:-$(pend app_object_id)}"
-SP_NAME="${SP_NAME:-$(pend sp_name)}"
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
-APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+# With a record, its identity wins: a value left in the shell by another
+# operation must match it or be unset (shell values are used only without one)
+HAVE_REC=$(jq -r 'select(.provider == "azure") | "yes"' "$PENDING" 2>/dev/null)
+pick() {   # $1 = variable, $2 = the record's value
+  [ -n "$HAVE_REC" ] || return 0
+  [ -z "${!1:-}" ] || [ "${!1}" = "$2" ] \
+    || { echo "ERROR: $1 is ${!1}, but $PENDING names ${2:-none}; nothing changed. Unset $1."; exit 1; }
+  printf -v "$1" '%s' "$2"
+}
+pick APP_OBJECT_ID "$(pend app_object_id)"; pick SP_NAME "$(pend sp_name)"
+pick SUBSCRIPTION_ID "$(pend subscription)"; pick APP_ID "$(pend app_id)"
+APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 [ -n "$APP_OBJECT_ID" ] || [ -n "$APP_ID" ] || [ -n "$SP_NAME" ] \
   || { echo "ERROR: set APP_OBJECT_ID, APP_ID or SP_NAME from the failed setup's output (no $PENDING)."; exit 1; }
 # Find the application. Entra replicates a new object for up to a few
@@ -509,9 +518,18 @@ With the CLI path (an `az` signed in with the bootstrap account), the same rollb
 ```bash
 # Names from the setup record (works from a fresh shell), else credentials.json
 pend() { jq -r --arg k "$1" 'select(.provider == "azure") | .[$k] // empty' .cloud-setup-pending.json 2>/dev/null; }
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
-SP_NAME="${SP_NAME:-$(pend sp_name)}"; SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
-APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
+# With a record, its identity wins: a value left in the shell by another
+# operation must match it or be unset (shell values are used only without one)
+HAVE_REC=$(jq -r 'select(.provider == "azure") | "yes"' .cloud-setup-pending.json 2>/dev/null)
+pick() {   # $1 = variable, $2 = the record's value
+  [ -n "$HAVE_REC" ] || return 0
+  [ -z "${!1:-}" ] || [ "${!1}" = "$2" ] \
+    || { echo "ERROR: $1 is ${!1}, but .cloud-setup-pending.json names ${2:-none}; nothing changed. Unset $1."; exit 1; }
+  printf -v "$1" '%s' "$2"
+}
+pick SUBSCRIPTION_ID "$(pend subscription)"; pick SP_NAME "$(pend sp_name)"
+pick SP_OBJECT_ID "$(pend sp_object_id)"; pick APP_ID "$(pend app_id)"
+APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID (no Azure entry in .cloud-setup-pending.json)."; exit 1; }
 # Search the setup's subscription (and so its tenant), not whatever the CLI has
 # selected: in another tenant the lookups below come back empty, and the

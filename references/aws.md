@@ -427,8 +427,17 @@ Run it from any shell: it reads the names from `.cloud-setup-pending.json` (or `
 ```bash
 PENDING=.cloud-setup-pending.json
 pend() { jq -r --arg k "$1" 'select(.provider == "aws") | .[$k] // empty' "$PENDING" 2>/dev/null; }
-AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(pend account)}"
-IAM_USER="${IAM_USER:-$(pend iam_user)}"   # empty: the user was never created
+# With a record, its identity wins: a value left in the shell by another
+# operation must match it or be unset (shell values are used only without one)
+HAVE_REC=$(jq -r 'select(.provider == "aws") | "yes"' "$PENDING" 2>/dev/null)
+pick() {   # $1 = variable, $2 = the record's value
+  [ -n "$HAVE_REC" ] || return 0
+  [ -z "${!1:-}" ] || [ "${!1}" = "$2" ] \
+    || { echo "ERROR: $1 is ${!1}, but $PENDING names ${2:-none}; nothing changed. Unset $1."; exit 1; }
+  printf -v "$1" '%s' "$2"
+}
+pick AWS_ACCOUNT_ID "$(pend account)"
+pick IAM_USER "$(pend iam_user)"   # empty: the user was never created
 # An ambiguous record (Add Team Member found the user after a failed
 # create-user) may name a user another run created: delete it only when a
 # person confirmed it is this run's
@@ -444,7 +453,7 @@ if [ "$(pend ambiguous)" = true ] && [ "${CONFIRM_USER:-}" != 1 ]; then
 fi
 # An Add Team Member record (member_only) covers only the member's user: the
 # shared group belongs to the whole team and is never deleted here
-if [ "$(pend member_only)" = true ]; then GROUP_NAME=""; else GROUP_NAME="${GROUP_NAME:-$(pend group)}"; fi
+if [ "$(pend member_only)" = true ]; then GROUP_NAME=""; else pick GROUP_NAME "$(pend group)"; fi
 [ -n "$AWS_ACCOUNT_ID" ] && { [ -n "$GROUP_NAME" ] || [ -n "$IAM_USER" ]; } \
   || { echo "ERROR: set AWS_ACCOUNT_ID and GROUP_NAME or IAM_USER (no AWS entry in $PENDING)."; exit 1; }
 CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
