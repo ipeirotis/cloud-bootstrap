@@ -146,6 +146,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Azure activation (hook template, multi-provider hook, Activate snippet) checks the decrypted secret's `keyId` against `key_ids`, as GCP activation does; credentials from before `keyId` was stored are not checked.
 - GCP rotation's revoke step retries a 404 before clearing a key's records.
 - AWS and Azure role grants resolve the group, application and subscription from the setup record or config, and stop when a `GROUP_NAME`, `APP_ID`, `SUBSCRIPTION_ID` or `credentials.json` left from another setup disagrees.
+- `update.sh` drops symlinks at managed paths (or their parent directories) in the staged copy before removing stale files and overlaying the release, so neither step writes through a link to a file outside the skill.
+- GCP setup marks the setup record `ambiguous` when a failed create is followed by a chosen service-account ID turning up, and the rollback then requires `CONFIRM_SA=1`; if the mark cannot be written, the record is removed instead.
+- Azure Add Team Member uses the configured tenant and stops when a different `TENANT_ID` is set in the shell.
 
 ## [1.4.0] - 2026-04-10
 

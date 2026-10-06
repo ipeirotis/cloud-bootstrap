@@ -698,7 +698,14 @@ When a new team member joins, create a new client secret for the existing app. R
 # these live in the matching providers[] entry).
 azcfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"azure\") | .$1) else (select(.provider==\"azure\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
 APP_ID=$(azcfg service_account)
-TENANT_ID="${TENANT_ID:-$(azcfg tenant)}"
+# The configured tenant wins: a TENANT_ID left in the shell by another Azure
+# operation would be written into the new credential, which then cannot log in
+CFG_TENANT=$(azcfg tenant)
+if [ -n "$CFG_TENANT" ]; then
+  [ -z "${TENANT_ID:-}" ] || [ "$TENANT_ID" = "$CFG_TENANT" ] \
+    || { echo "ERROR: TENANT_ID is $TENANT_ID, but .cloud-config.json has $CFG_TENANT; nothing created. Unset TENANT_ID."; exit 1; }
+  TENANT_ID="$CFG_TENANT"
+fi
 [ -n "$APP_ID" ] || { echo "ERROR: no Azure service_account (appId) in .cloud-config.json."; exit 1; }
 [ -n "$TENANT_ID" ] || { echo "ERROR: Azure tenant ID not found in .cloud-config.json — ask the user and set TENANT_ID."; exit 1; }
 OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \

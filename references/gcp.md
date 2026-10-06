@@ -312,8 +312,20 @@ case "$RC:$HTTP" in
     done
     if [ "$S" = 0 ] && [ "${SA_ID_GENERATED:-}" != 1 ]; then
       # A chosen ID could also be another run's: keep the account for the user
-      # to check, recorded in .cloud-setup-pending.json for the rollback
-      echo "WARNING: $SA_ID exists now; if no other setup created it, run Rollback a Failed Setup."
+      # to check. Mark the record, so the rollback (and the next session's
+      # recovery) leaves the account alone until a person confirms it
+      if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+        && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
+        echo "WARNING: $SA_ID exists now, created by this run or by another setup using the same ID."
+        echo "Check with the user before running Rollback a Failed Setup with CONFIRM_SA=1 (or delete the record if it is not this run's)."
+      else
+        # Unmarked, the record would let a rollback delete an account that may
+        # be another setup's; it names nothing else yet, so drop it
+        rm -f .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+        echo "WARNING: $SA_ID exists now and the record could not be marked as unconfirmed, so it was removed."
+        echo "Check with the user whether $SA_ID is this run's; only then delete it by hand."
+        [ ! -e .cloud-setup-pending.json ] || echo "ERROR: .cloud-setup-pending.json could not be removed either; delete it by hand before any rollback."
+      fi
     elif [ "$S" = 0 ]; then
       curl -sS --fail -X DELETE "$SA_URL" -H "Authorization: Bearer $TOKEN" >/dev/null \
         && { echo "Removed $SA_ID, which the failed call had created."; rm -f .cloud-setup-pending.json; } \
@@ -345,6 +357,13 @@ PENDING=.cloud-setup-pending.json
 PROJECT_ID="${PROJECT_ID:-$(jq -r 'select(.provider == "gcp") | .project_id // empty' "$PENDING" 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-$(jq -r 'select(.provider == "gcp") | .service_account // empty' "$PENDING" 2>/dev/null)}"
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (no GCP entry in $PENDING)."; exit 1; }
+# An unconfirmed record (a create call failed, then a chosen ID turned up)
+# may name another setup's account: touch it only once a person confirms
+if [ "$(jq -r 'select(.provider == "gcp") | .ambiguous // empty' "$PENDING" 2>/dev/null)" = true ] && [ "${CONFIRM_SA:-}" != 1 ]; then
+  echo "ERROR: $PENDING marks $SA_EMAIL as possibly another setup's; nothing changed."
+  echo "Confirm with the user it is this run's account, then re-run with CONFIRM_SA=1 (or delete $PENDING if it is not)."
+  exit 1
+fi
 RB_OK=1; WORK=$(mktemp -d) && [ -d "$WORK" ] || { echo "ERROR: could not create a private temp directory; nothing changed."; exit 1; }
 CRM="https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID"
 if curl -sS --fail -X POST "$CRM:getIamPolicy" -H "Authorization: Bearer $TOKEN" \

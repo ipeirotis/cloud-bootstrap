@@ -117,6 +117,17 @@ OLD_DIR="$PARENT/.$NAME.old.$$"
 trap 'rm -rf "$TMP" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
 trap 'exit 1' INT TERM HUP
 cp -R "$DEST/." "$NEW/"
+# A managed path, or a directory on the way to one, that is a symlink would
+# make the removals and the overlay below act on the link's target outside
+# the skill: drop such links so real files replace them
+for FILE in $FILES $(cat "$NEW/.installed-files" 2>/dev/null); do
+  case "$FILE" in ''|/*|*..*) continue ;; esac
+  P="$NEW"
+  for SEG in $(printf '%s' "$FILE" | tr '/' ' '); do
+    P="$P/$SEG"
+    if [ -L "$P" ]; then rm -f -- "$P"; break; fi
+  done
+done
 # Remove files the previous release installed that this release no longer
 # ships, so a dropped or renamed workflow does not linger. Only paths listed
 # in the recorded file list are touched; installs older than that list have
