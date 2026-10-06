@@ -171,6 +171,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Rotation step 8 always reads the new key ID from the re-encrypted file and stops when a `NEW_KEY_ID` in the shell disagrees.
 - Member removal deletes credential files with `git --literal-pathspecs rm`, so wildcard characters in an email cannot match another member's file.
 - Azure CLI Grant Roles selects and verifies the recorded subscription before looking up the service principal.
+- AWS rollback saves the access key IDs it deleted in `.cloud-setup-pending.json` when the config cleanup fails, and a retry clears their `unrevoked` entries using those IDs and the key in the kept `credentials.json`.
 
 ## [1.4.0] - 2026-04-10
 

@@ -508,6 +508,10 @@ if [ "$RB_OK" = 1 ]; then
   # this user (recorded only after the account check). Entries for another
   # account or an unknown owner stay: they may still be live elsewhere.
   if [ -n "$IAM_USER" ] && [ -f .cloud-config.json ]; then
+    # A retry after a failed cleanup finds the user already gone, so add the
+    # key IDs an earlier attempt saved in the record, and this run's own key
+    # from the kept credentials.json (deleted with its user)
+    DELETED_KEYS="$DELETED_KEYS $(pend deleted_keys) $(jq -r '.access_key_id // .AccessKey.AccessKeyId // empty' credentials.json 2>/dev/null)"
     jq --arg u "$IAM_USER" --arg ks "$DELETED_KEYS" '
       ($ks | split(" ") | map(select(. != ""))) as $gone
       | .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws"
@@ -515,7 +519,11 @@ if [ "$RB_OK" = 1 ]; then
              and ((.id == "(user \($u))" or .id == "(all keys of \($u))" or .id == "(new key of \($u))") | not))]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
       && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed." \
-      || { rm -f .cloud-config.json.tmp; echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; $PENDING is kept. Fix the file and re-run this block."; exit 1; }
+      || { rm -f .cloud-config.json.tmp
+           # Keep the deleted key IDs for the retry, which can no longer list them
+           jq --arg ks "$DELETED_KEYS" '. + {deleted_keys: $ks}' "$PENDING" > "$PENDING.tmp" \
+             && mv "$PENDING.tmp" "$PENDING" || rm -f "$PENDING.tmp"
+           echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; $PENDING is kept. Fix the file and re-run this block."; exit 1; }
   fi
   rm -f credentials.json credentials_clean.json "$PENDING"; echo "Rollback complete."
 else
