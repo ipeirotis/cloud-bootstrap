@@ -409,7 +409,7 @@ for DELAY in 0 20 40 60; do
     [ -z "$APP_OBJECT_ID" ] || break
   fi
 done
-RB_OK=1; RA_OK=1
+RB_OK=1; RA_OK=1; APP_KIDS=""
 # Role assignments are not removed with the service principal (they linger as
 # "Identity not found" and count against the subscription's quota): delete
 # the ones setup granted, by the principal's object ID, which still names them
@@ -447,6 +447,9 @@ if [ -n "$APP_OBJECT_ID" ]; then
   SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
   [ "$RA_OK" = 0 ] || [ -z "$SP_OBJECT_ID" ] || remove_role_assignments
   if [ "$RA_OK" = 1 ]; then
+    # Its secret IDs, for clearing their "unrevoked" entries once it is gone
+    APP_KIDS=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+      -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '[.passwordCredentials[].keyId] | join(" ")' 2>/dev/null)
     HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
       -H "Authorization: Bearer $GRAPH_TOKEN")
     case "$HTTP" in
@@ -468,6 +471,20 @@ else
   fi
 fi
 if [ "$RB_OK" = 1 ]; then
+  # The application and all its secrets are gone: drop the "unrevoked" entries
+  # that name them (a failed discard may have recorded them), or every later
+  # phase check would report credentials that no longer exist. That is the
+  # secret IDs read before the deletion, and the discard script's entries for
+  # this app ("app <appId>, ..."); entries for other apps stay
+  if [ -f .cloud-config.json ]; then
+    jq --arg a "$APP_ID" --arg ks "$APP_KIDS $(jq -r '.keyId // empty' credentials.json 2>/dev/null)" '
+      ($ks | split(" ") | map(select(. != ""))) as $gone
+      | .unrevoked = [(.unrevoked // [])[] | select(.provider != "azure"
+          or ((.id | IN($gone[])) | not)
+             and ($a == "" or (((.note // "") | startswith("app \($a), ")) | not)))]
+      | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+  fi
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
 else
   echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1
@@ -523,16 +540,33 @@ fi
 # Only then delete the application (already gone counts as done)
 # (a not-found answer counts only once it persists across retries: Entra can
 # show a just-created application as missing for a few minutes)
+APP_KIDS=""
 if [ -n "$APP_ID" ]; then
   for DELAY in 0 20 40 60; do
     sleep "$DELAY"
     if OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
+      # Its secret IDs, for clearing their "unrevoked" entries once it is gone
+      APP_KIDS=$(az ad app credential list --id "$APP_ID" --query '[].keyId' -o tsv 2>/dev/null | tr '\n' ' ')
       az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
       break
     elif ! printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound'; then
       echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1
     fi
   done
+fi
+# The application and all its secrets are gone: drop the "unrevoked" entries
+# that name them (a failed discard may have recorded them), or every later
+# phase check would report credentials that no longer exist. That is the
+# secret IDs read before the deletion, and the discard script's entries for
+# this app ("app <appId>, ..."); entries for other apps stay
+if [ -f .cloud-config.json ]; then
+  jq --arg a "$APP_ID" --arg ks "$APP_KIDS $(jq -r '.keyId // empty' credentials.json 2>/dev/null)" '
+    ($ks | split(" ") | map(select(. != ""))) as $gone
+    | .unrevoked = [(.unrevoked // [])[] | select(.provider != "azure"
+        or ((.id | IN($gone[])) | not)
+           and ($a == "" or (((.note // "") | startswith("app \($a), ")) | not)))]
+    | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
+    && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
 fi
 rm -f .cloud-setup-pending.json
 rm -f credentials.json
