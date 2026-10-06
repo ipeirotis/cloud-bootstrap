@@ -116,15 +116,22 @@ case "$PROVIDER" in
         # The lost replacement is a key the config does not name. Nobody holds
         # its secret, but an overlapping rotation of this member could have
         # created such a key too, so record the candidates instead of deleting
-        AK=""
+        AK=""; UNREC=""
         for k in $KEYS; do
           printf '%s\n' $KNOWN | grep -qxF "$k" && continue
           AK="$AK $k"
           jq --arg id "$k" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
             '.unrevoked = ((.unrevoked // []) + [{provider: "aws", id: $id, member: $m, ambiguous: true,
                note: "unrecorded key from an interrupted rotation, or one an overlapping rotation created", at: $t}])' \
-            "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+            "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG" \
+            || { rm -f "$CONFIG.tmp"; UNREC="$UNREC $k"; }
         done
+        if [ -n "$UNREC" ]; then
+          # Nothing durable names these keys: stop with them on screen, and
+          # keep the plaintext so the interrupted run stays visible
+          echo "ERROR: could not record these keys of $N in $CONFIG (fix the file, then add them under \"unrevoked\" by hand):$UNREC"
+          exit 1
+        fi
         if [ -n "$AK" ]; then
           echo "Unrecorded key(s) of $N:$AK (recorded as ambiguous under \"unrevoked\"; commit $CONFIG)."
           echo "Delete each one no rotation of yours is using: aws iam delete-access-key --user-name $N --access-key-id <id>"

@@ -82,18 +82,20 @@ Using the bootstrap token and provider-specific commands:
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves. (Azure's "Add Client Secret" snippet records the secret's `keyId` there itself.) Run it before the next step: it reads the ID from `credentials.json` (or, failing that, from the encrypted file).
 5. Commit the new encrypted credentials file and `.cloud-config.json` (it now holds this member's `key_ids` entry for GCP or Azure, and any `unrevoked` record).
-6. **Only after that commit, delete the plaintext** (until then its presence is what marks the onboarding as unfinished for the next session, see "Recovering an Interrupted Run" in SKILL.md):
-   ```bash
-   # The marker goes first: a marker left without the plaintext would make
-   # the next session roll back the identity this run just committed
-   rm -f .cloud-setup-pending.json
-   rm -f credentials.json
-   ```
-   (`.cloud-setup-pending.json` exists only for AWS, where the snippet records the new member's IAM user before creating it.)
+6. **Keep `credentials.json` (and, for AWS, `.cloud-setup-pending.json`) until Step 4 is done.** Until then their presence marks the onboarding as unfinished for the next session ("Recovering an Interrupted Run" in SKILL.md), so a missing SessionStart hook is still added if this run stops.
 
 ## Step 4: Ensure SessionStart Hook Exists
 
-Check if `.claude/settings.json` already contains a SessionStart hook for the provider's CLI. If not, add one following the "SessionStart Hook" instructions in the provider's reference file. Commit `.claude/settings.json` if it was created or modified.
+Check if `.claude/settings.json` already contains a SessionStart hook for the provider's CLI. If not, add one following the "SessionStart Hook" instructions in the provider's reference file. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` if they were created or modified.
+
+**Only after the hook is in place and committed, delete the recovery state:**
+```bash
+# The marker goes first: a marker left without the plaintext would make
+# the next session roll back the identity this run just committed
+rm -f .cloud-setup-pending.json
+rm -f credentials.json
+```
+(`.cloud-setup-pending.json` exists only for AWS, where the snippet records the new member's IAM user before creating it.)
 
 ## Step 5: Done
 
