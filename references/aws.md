@@ -211,12 +211,14 @@ If `.claude/settings.json` already exists, merge the `SessionStart` hook into th
 Tell the user to run locally:
 
 ```bash
+# MFA_DEVICE_ARN exactly as `aws iam list-mfa-devices --query 'MFADevices[].SerialNumber'`
+# prints it (its partition is arn:aws, arn:aws-cn or arn:aws-us-gov)
 aws sts get-session-token --duration-seconds 3600 \
-  --serial-number arn:aws:iam::ACCOUNT_ID:mfa/MFA_DEVICE_NAME \
+  --serial-number "MFA_DEVICE_ARN" \
   --token-code 123456
 ```
 
-Ask the user for their MFA device ARN (`aws iam list-mfa-devices`) and a current code. The MFA flags are required: credentials from `GetSessionToken` [cannot call IAM APIs unless MFA information is included](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetSessionToken.html), and setup immediately calls `iam:CreateGroup`, `iam:CreateUser`, and `iam:CreateAccessKey`.
+Ask the user for their MFA device ARN, copied whole from `aws iam list-mfa-devices` (never rebuilt from the account ID, which would assume the commercial `aws` partition), and a current code. The MFA flags are required: credentials from `GetSessionToken` [cannot call IAM APIs unless MFA information is included](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetSessionToken.html), and setup immediately calls `iam:CreateGroup`, `iam:CreateUser`, and `iam:CreateAccessKey`.
 
 This returns `AccessKeyId`, `SecretAccessKey`, and `SessionToken`, valid for 1 hour.
 
@@ -587,9 +589,11 @@ GROUP_NAME="${GROUP_NAME:-$(aws_cfg service_account)}"
 For AWS managed policies:
 
 ```bash
+# The partition (aws, aws-cn, aws-us-gov) of the account these credentials are in
+PARTITION=$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)
 aws iam attach-group-policy \
   --group-name "$GROUP_NAME" \
-  --policy-arn arn:aws:iam::aws:policy/POLICY_NAME
+  --policy-arn "arn:$PARTITION:iam::aws:policy/POLICY_NAME"
 ```
 
 For inline policies (more granular):
@@ -603,12 +607,12 @@ aws iam put-group-policy \
     "Statement": [{
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::BUCKET_NAME/*"
+      "Resource": "arn:PARTITION:s3:::BUCKET_NAME/*"
     }]
   }'
 ```
 
-Prefer inline policies scoped to specific resources over broad managed policies.
+Replace `PARTITION` with the account's partition (`aws`, or `aws-cn` / `aws-us-gov`; see above). Prefer inline policies scoped to specific resources over broad managed policies.
 
 ## Activate (Subsequent Sessions)
 
@@ -719,6 +723,23 @@ GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
 MEMBER_EMAIL="departed-user@example.com"
 IAM_USER=$(iam_user_name "$MEMBER_EMAIL" "$USER_PREFIX")
+# Pre-1.5 names (prefix claude-agent) replace . and @, so distinct emails can
+# share a user (alice.smith@ and alice-smith@). Before deleting anything,
+# require this member's own credential file and refuse when another member's
+# email maps to the same user, unless a person confirmed it (CONFIRM_USER=1)
+if [ "$USER_PREFIX" = "claude-agent" ] && [ "${CONFIRM_USER:-}" != 1 ]; then
+  [ -f ".cloud-credentials.${MEMBER_EMAIL}.enc" ] || [ -f ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ] \
+    || { echo "ERROR: no credential file for $MEMBER_EMAIL; check the address (or set CONFIRM_USER=1 once confirmed)."; exit 1; }
+  for F in .cloud-credentials.*.enc; do
+    [ -e "$F" ] || continue
+    E=${F#.cloud-credentials.}; E=${E%.enc}
+    case "$E" in gcp.*|azure.*) continue ;; aws.*) E=${E#aws.} ;; esac
+    if [ "$E" != "$MEMBER_EMAIL" ] && [ "$(iam_user_name "$E" "$USER_PREFIX")" = "$IAM_USER" ]; then
+      echo "ERROR: $E maps to the same IAM user $IAM_USER as $MEMBER_EMAIL; nothing deleted. Resolve with the user (CONFIRM_USER=1 to proceed)."
+      exit 1
+    fi
+  done
+fi
 
 # Delete nothing unless the bootstrap credentials belong to this repo's
 # account: a same-named user in another account is not this member

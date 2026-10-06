@@ -371,25 +371,30 @@ SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
 APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 [ -n "$APP_OBJECT_ID" ] || [ -n "$APP_ID" ] || [ -n "$SP_NAME" ] \
   || { echo "ERROR: set APP_OBJECT_ID, APP_ID or SP_NAME from the failed setup's output (no $PENDING)."; exit 1; }
-LOOKUP_OK=1
-if [ -z "$APP_OBJECT_ID" ]; then
-  if [ -n "$APP_ID" ]; then F="appId eq '$APP_ID'"; else F="displayName eq '$SP_NAME'"; fi
-  R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" --data-urlencode "\$filter=$F" \
-        -H "Authorization: Bearer $GRAPH_TOKEN") || LOOKUP_OK=0
-  APP_OBJECT_ID=$(printf '%s' "${R:-}" | jq -r '.value[0].id // empty')
-fi
-[ "$LOOKUP_OK" = 1 ] || { echo "ERROR: could not look the application up; nothing deleted. Retry."; exit 1; }
-# A recorded object ID whose application is gone (an earlier cleanup deleted
-# it) means there is nothing left to roll back
-if [ -n "$APP_OBJECT_ID" ]; then
-  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-    -H "Authorization: Bearer $GRAPH_TOKEN")
-  case "$HTTP" in
-    200) ;;
-    404) APP_OBJECT_ID="" ;;
-    *) echo "ERROR: could not look the application up (HTTP $HTTP); nothing deleted. Retry."; exit 1 ;;
-  esac
-fi
+# Find the application. Entra replicates a new object for up to a few
+# minutes, during which it can read as missing (404, or an empty filter
+# result): call it gone (an earlier cleanup deleted it, or it was never
+# created) only after it stays missing across retries
+REC_OBJECT_ID="$APP_OBJECT_ID"; APP_OBJECT_ID=""
+if [ -n "$APP_ID" ]; then F="appId eq '$APP_ID'"; else F="displayName eq '$SP_NAME'"; fi
+for DELAY in 0 20 40 60; do
+  sleep "$DELAY"
+  if [ -n "$REC_OBJECT_ID" ]; then
+    HTTP=$(curl -sS -o /dev/null -w '%{http_code}' "https://graph.microsoft.com/v1.0/applications/$REC_OBJECT_ID" \
+      -H "Authorization: Bearer $GRAPH_TOKEN")
+    case "$HTTP" in
+      200) APP_OBJECT_ID="$REC_OBJECT_ID"; break ;;
+      404) ;;
+      *) echo "ERROR: could not look the application up (HTTP $HTTP); nothing deleted. Retry."; exit 1 ;;
+    esac
+  else
+    R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" --data-urlencode "\$filter=$F" \
+          -H "Authorization: Bearer $GRAPH_TOKEN") \
+      || { echo "ERROR: could not look the application up; nothing deleted. Retry."; exit 1; }
+    APP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')
+    [ -z "$APP_OBJECT_ID" ] || break
+  fi
+done
 RB_OK=1; RA_OK=1
 # Role assignments are not removed with the service principal (they linger as
 # "Identity not found" and count against the subscription's quota): delete
@@ -466,9 +471,15 @@ APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' 
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID (no Azure entry in .cloud-setup-pending.json)."; exit 1; }
 # Interrupted before the IDs were saved: find the application by its
 # per-run name, which the collision check proved unique
+# (Entra can show a just-created application as missing for a few minutes:
+# retry before concluding nothing was created)
 if [ -z "$APP_ID" ] && [ -n "$SP_NAME" ]; then
-  APP_ID=$(az ad app list --display-name "$SP_NAME" --query '[0].appId' -o tsv) \
-    || { echo "ERROR: could not look up application $SP_NAME; nothing deleted."; exit 1; }
+  for DELAY in 0 20 40 60; do
+    sleep "$DELAY"
+    APP_ID=$(az ad app list --display-name "$SP_NAME" --query '[0].appId' -o tsv) \
+      || { echo "ERROR: could not look up application $SP_NAME; nothing deleted."; exit 1; }
+    [ -z "$APP_ID" ] || break
+  done
 fi
 [ -n "$APP_ID" ] || [ -n "$SP_OBJECT_ID" ] \
   || { echo "No application named ${SP_NAME:-(unknown)} exists: nothing was created."; rm -f .cloud-setup-pending.json; rm -f credentials.json; exit 0; }
@@ -490,12 +501,18 @@ if [ -n "$SP_OBJECT_ID" ]; then
   [ "$LEFT" = 0 ] || { echo "ERROR: role assignments of $SP_OBJECT_ID remain; the application is kept. Re-run this block."; exit 1; }
 fi
 # Only then delete the application (already gone counts as done)
+# (a not-found answer counts only once it persists across retries: Entra can
+# show a just-created application as missing for a few minutes)
 if [ -n "$APP_ID" ]; then
-  if OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
-    az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
-  elif ! printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound'; then
-    echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1
-  fi
+  for DELAY in 0 20 40 60; do
+    sleep "$DELAY"
+    if OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
+      az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
+      break
+    elif ! printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound'; then
+      echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1
+    fi
+  done
 fi
 rm -f .cloud-setup-pending.json
 rm -f credentials.json
