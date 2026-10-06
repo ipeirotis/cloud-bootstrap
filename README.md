@@ -142,11 +142,21 @@ for FILE in $FILES; do
   mkdir -p "$STAGE/$(dirname "$FILE")"
   curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
 done
-mkdir -p "$DEST" && cp -R "$STAGE"/. "$DEST"/ \
-  || { echo "ERROR: could not copy into $DEST."; exit 1; }
 # Record what was installed, as install.sh does, so update.sh can later remove
 # files a newer release drops
-printf '%s\n' $FILES > "$DEST/.installed-files"
+printf '%s\n' $FILES > "$STAGE/.installed-files"
+# Swap the complete staged copy in with renames (as update.sh does): a failure
+# leaves the existing installation untouched, never a mix of two releases
+mkdir -p "$(dirname "$DEST")"
+NEW=$(mktemp -d "$(dirname "$DEST")/.cloud-bootstrap.new.XXXXXX") \
+  || { echo "ERROR: could not create a directory next to $DEST; nothing changed."; exit 1; }
+OLD_DIR="$(dirname "$DEST")/.cloud-bootstrap.old.$$"
+trap 'rm -rf "$STAGE" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
+cp -R "$STAGE"/. "$NEW"/ && chmod 755 "$NEW" \
+  || { echo "ERROR: could not prepare the new copy; nothing changed."; exit 1; }
+if [ -e "$DEST" ]; then mv "$DEST" "$OLD_DIR" || { echo "ERROR: could not move the old copy aside; nothing changed."; exit 1; }; fi
+mv "$NEW" "$DEST" || { echo "ERROR: could not move the new copy into place; the old one is restored."; exit 1; }
+rm -rf "$OLD_DIR"
 
 git add "$DEST"
 git commit -m "Add cloud-bootstrap skill"

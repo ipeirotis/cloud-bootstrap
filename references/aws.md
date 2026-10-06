@@ -421,11 +421,13 @@ CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
   || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
 [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
   || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not $AWS_ACCOUNT_ID; nothing deleted."; exit 1; }
-RB_OK=1
+RB_OK=1; DELETED_KEYS=""
 gone() { printf '%s' "$1" | grep -q NoSuchEntity; }
 if [ -n "$IAM_USER" ]; then
   if OUT=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>&1); then
-    for k in $OUT; do aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k" || RB_OK=0; done
+    for k in $OUT; do
+      if aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"; then DELETED_KEYS="$DELETED_KEYS $k"; else RB_OK=0; fi
+    done
     for g in $(aws iam list-groups-for-user --user-name "$IAM_USER" --query 'Groups[].GroupName' --output text); do
       aws iam remove-user-from-group --group-name "$g" --user-name "$IAM_USER" || RB_OK=0
     done
@@ -446,12 +448,17 @@ elif ! gone "$OUT"; then
   RB_OK=0; echo "WARNING: could not inspect group $GROUP_NAME: $OUT"
 fi
 if [ "$RB_OK" = 1 ]; then
-  # The user and all its keys are gone: drop this member's AWS entries under
-  # "unrevoked" (a failed discard may have recorded the key there), or every
-  # later phase check would report a live credential that no longer exists
+  # Drop the "unrevoked" entries this rollback resolved (a failed discard may
+  # have recorded them), or every later phase check would report credentials
+  # that no longer exist: the key IDs deleted above, and placeholders naming
+  # this user (recorded only after the account check). Entries for another
+  # account or an unknown owner stay: they may still be live elsewhere.
   if [ -n "$IAM_USER" ] && [ -f .cloud-config.json ]; then
-    jq --arg e "$(git config user.email)" '
-      .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .member != $e)]
+    jq --arg u "$IAM_USER" --arg ks "$DELETED_KEYS" '
+      ($ks | split(" ") | map(select(. != ""))) as $gone
+      | .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws"
+          or ((.id | IN($gone[])) | not)
+             and ((.id == "(user \($u))" or .id == "(all keys of \($u))" or .id == "(new key of \($u))") | not))]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
       && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
   fi

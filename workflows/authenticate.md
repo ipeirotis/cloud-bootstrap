@@ -44,10 +44,34 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    fi
 
    trap 'rm -f /tmp/credentials.json' EXIT
+   # A failed run must not leave an earlier activation of this provider in this
+   # container usable: log it out and drop what was persisted for the session,
+   # as the SessionStart hooks do
+   clear_prior() {
+     case "$PROVIDER" in
+       gcp)
+         A=$(jq -r '.client_email // empty' /tmp/gcp-adc-credentials.json 2>/dev/null)
+         [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
+         rm -f /tmp/gcp-adc-credentials.json
+         if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+           sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
+           echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
+         fi ;;
+       aws)
+         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+         if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
+           sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
+           echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+         fi ;;
+       azure)
+         command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true ;;
+     esac
+   }
    if ! (umask 077 && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 \
      -pass stdin \
      -in "$ENC_FILE" -out /tmp/credentials.json 2>/dev/null); then
-     echo "WARNING: Failed to decrypt $PROVIDER credentials — check your credentials key or .enc file integrity."
+     echo "WARNING: Failed to decrypt $PROVIDER credentials — check your credentials key or .enc file integrity. Any earlier $PROVIDER login in this session is cleared."
+     clear_prior
      # Multi-provider runs inside the for loop above (skip to next provider);
      # single-provider is a flat script (stop). `continue` outside a loop is a
      # no-op that returns success, so branch explicitly instead of relying on it.
