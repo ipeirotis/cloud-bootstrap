@@ -174,6 +174,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - AWS rollback saves the access key IDs it deleted in `.cloud-setup-pending.json` when the config cleanup fails, and a retry clears their `unrevoked` entries using those IDs and the key in the kept `credentials.json`.
 - Re-onboarding a member whose `key_ids` entry names a different key or secret queues that old ID in `revoke_pending` instead of overwriting the only record of it (GCP and Azure).
 - Azure rollback (REST and CLI) deletes the application only after its secret IDs were listed, so their `unrevoked` entries can still be cleared.
+- AWS member removal updates `.cloud-config.json` before removing the credential file, and keeps the file if that update fails, as GCP and Azure do.
+- The installers' required-file check also follows paths named in the workflows, which covers the provider references.
+- Multi-Provider lists `AWS_ACCOUNT_ID` among the values each fresh-shell snippet needs when AWS is the provider being added.
 
 ## [1.4.0] - 2026-04-10
 

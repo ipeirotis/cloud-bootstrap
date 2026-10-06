@@ -151,10 +151,11 @@ for FILE in $FILES; do
   mkdir -p "$STAGE/$(dirname "$FILE")"
   curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
 done
-# As install.sh does: every file SKILL.md names, and the revocation helper,
+# As install.sh does: every file SKILL.md or a workflow names, and the revocation helper,
 # must have arrived before the old copy is replaced
 for REQ in VERSION SKILL.md scripts/discard-credential.sh \
-           $(grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' "$STAGE/SKILL.md" 2>/dev/null | sort -u); do
+           $(cat "$STAGE/SKILL.md" "$STAGE"/workflows/*.md 2>/dev/null \
+             | grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' | sort -u); do
   [ -s "$STAGE/$REQ" ] || { echo "ERROR: the release lacks $REQ; nothing changed."; exit 1; }
 done
 # Record what was installed, as install.sh does, so update.sh can later remove

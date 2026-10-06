@@ -115,10 +115,12 @@ for FILE in $FILES; do
   mkdir -p "$TMP/files/$(dirname "$FILE")"
   curl -fsSL "$SRC/$FILE" -o "$TMP/files/$FILE"
 done
-# Every file SKILL.md sends the agent to, and the revocation helper the
+# Every file SKILL.md or a workflow sends the agent to (the provider
+# references included), and the revocation helper the
 # workflows call, must be in the release: a missing one would surface only
 # mid-workflow, possibly with a live credential to clean up
-REQUIRED="VERSION SKILL.md scripts/discard-credential.sh $(grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' "$TMP/files/SKILL.md" | sort -u)"
+REQUIRED="VERSION SKILL.md scripts/discard-credential.sh $(cat "$TMP/files/SKILL.md" "$TMP"/files/workflows/*.md 2>/dev/null \
+  | grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' | sort -u)"
 for REQ in $REQUIRED; do
   [ -s "$TMP/files/$REQ" ] || { echo "ERROR: the release lacks $REQ (missing from MANIFEST or empty); nothing changed." >&2; exit 1; }
 done

@@ -896,8 +896,8 @@ elif printf '%s' "$KEYS" | grep -q NoSuchEntity; then
 else
   echo "ERROR: could not list $IAM_USER's access keys: $KEYS"; exit 1
 fi
-# All gone: now remove the member's credential file and any pending entries
-git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+# All gone: clear the member's records first, then remove the credential file
+# (if the config cannot be updated, the file stays for the retry)
 # "unrevoked" entries go only when this run proved them gone: the key IDs it
 # deleted, and placeholders naming this user. An entry recorded for another
 # account or an unconfirmed owner stays: it may still be live elsewhere.
@@ -909,7 +909,9 @@ jq --arg e "$MEMBER_EMAIL" --arg u "$IAM_USER" --arg ks "$DELETED_KEYS" '
          and ((.id == "(user \($u))" or .id == "(all keys of \($u))" or .id == "(new key of \($u))") | not))]
   | if .unrevoked == [] then del(.unrevoked) else . end
   | if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
-  .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+  .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+  || { rm -f .cloud-config.json.tmp; echo "ERROR: $IAM_USER is gone, but .cloud-config.json could not be updated; the credential file stays. Fix the file and retry."; exit 1; }
+git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 ```
 
 Commit the removed credential file and `.cloud-config.json` together.
