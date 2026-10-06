@@ -809,6 +809,11 @@ if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMet
     aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID" \
       || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
     DELETED_KEYS="$DELETED_KEYS $KEY_ID"
+    # Clear its "unrevoked" entry right away: a retry after a later failure no
+    # longer sees this key, so it could not prove it gone then
+    jq --arg id "$KEY_ID" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .id != $id)]
+      | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
+      && mv .cloud-config.json.tmp .cloud-config.json || rm -f .cloud-config.json.tmp
   done
   # delete-user fails while any group membership remains: remove the ones the
   # user still has (none, if an earlier attempt already did)

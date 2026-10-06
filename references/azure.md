@@ -679,7 +679,7 @@ discard_unknown_secret() {
 on_signal() {
   local K; K=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json" 2>/dev/null)
   if [ -n "$K" ]; then
-    CRED_ID="$K" OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+    CRED_ID="$K" CRED_ID_FROM_RESPONSE=1 OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
       bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
     exit 1
   fi

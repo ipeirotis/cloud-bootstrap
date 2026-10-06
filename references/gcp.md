@@ -458,8 +458,17 @@ This command works for both first-time setup and adding new team members. Each c
 # multi-provider repos these live inside the matching providers[] entry).
 # add-team-member/rotation reuse this snippet with no first-time vars in scope,
 # so PROJECT_ID must be resolved here too, not assumed.
-PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+CFG_PROJECT=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
+CFG_SA=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
+# Once GCP is configured, the config decides: a PROJECT_ID or SA_EMAIL left in
+# the shell from another setup would point at another account
+if [ -n "$CFG_PROJECT$CFG_SA" ]; then
+  [ -z "${PROJECT_ID:-}" ] || [ "$PROJECT_ID" = "$CFG_PROJECT" ] \
+    || { echo "ERROR: PROJECT_ID=$PROJECT_ID but this repo is configured for $CFG_PROJECT; nothing done."; exit 1; }
+  [ -z "${SA_EMAIL:-}" ] || [ "$SA_EMAIL" = "$CFG_SA" ] \
+    || { echo "ERROR: SA_EMAIL=$SA_EMAIL but this repo is configured for $CFG_SA; nothing done."; exit 1; }
+  PROJECT_ID="$CFG_PROJECT"; SA_EMAIL="$CFG_SA"
+fi
 # No fallback to a guessed name: during first-time setup this is the SA_EMAIL
 # Create Service Account printed, and a guess could name another account.
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
@@ -516,7 +525,7 @@ RESP=$(umask 077 && mktemp)
 on_signal() {
   local N; N=$(jq -r '.name // empty' "$RESP" 2>/dev/null)
   if [ -n "$N" ]; then
-    CRED_ID="$N" TOKEN="${TOKEN:-}" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
+    CRED_ID="$N" CRED_ID_FROM_RESPONSE=1 TOKEN="${TOKEN:-}" bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
   else
     record_new_keys
   fi
@@ -545,7 +554,7 @@ esac
 KEY_NAME=$(jq -r '.name // empty' "$RESP")
 KEY_DATA=$(jq -r '.privateKeyData // empty' "$RESP")
 discard_new_key() {   # deletes the key by its resource name; see scripts/discard-credential.sh
-  CRED_ID="$KEY_NAME" TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
+  CRED_ID="$KEY_NAME" CRED_ID_FROM_RESPONSE=1 TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
          bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh gcp
 }
 [ -n "$KEY_DATA" ] || { echo "ERROR: response has no privateKeyData."; rm -f "$RESP"; discard_new_key; exit 1; }
@@ -591,8 +600,17 @@ List existing keys (useful if approaching the 10-key limit). Resolve the
 configured service account first (do not hard-code `claude-agent`):
 
 ```bash
-PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+CFG_PROJECT=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
+CFG_SA=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
+# Once GCP is configured, the config decides: a PROJECT_ID or SA_EMAIL left in
+# the shell from another setup would point at another account
+if [ -n "$CFG_PROJECT$CFG_SA" ]; then
+  [ -z "${PROJECT_ID:-}" ] || [ "$PROJECT_ID" = "$CFG_PROJECT" ] \
+    || { echo "ERROR: PROJECT_ID=$PROJECT_ID but this repo is configured for $CFG_PROJECT; nothing done."; exit 1; }
+  [ -z "${SA_EMAIL:-}" ] || [ "$SA_EMAIL" = "$CFG_SA" ] \
+    || { echo "ERROR: SA_EMAIL=$SA_EMAIL but this repo is configured for $CFG_SA; nothing done."; exit 1; }
+  PROJECT_ID="$CFG_PROJECT"; SA_EMAIL="$CFG_SA"
+fi
 # No fallback to a guessed name: during first-time setup this is the SA_EMAIL
 # Create Service Account printed, and a guess could name another account.
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (the account Create Service Account created)."; exit 1; }
@@ -605,9 +623,10 @@ Delete a member's key (if a team member leaves or a key is compromised). Look th
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
-# Resolve the identity here too: this block may run in a fresh shell
-PROJECT_ID="${PROJECT_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+# Resolve the identity from the config only (this block may run in a fresh
+# shell, or one holding another setup's PROJECT_ID/SA_EMAIL)
+PROJECT_ID=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
+SA_EMAIL=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
 # The member's current key plus any old keys still awaiting revocation
 # Every recorded credential of this member: current (key_ids), queued old ones

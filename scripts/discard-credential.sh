@@ -13,7 +13,11 @@
 # Needs the bootstrap token for the provider: TOKEN (GCP), the AWS bootstrap
 # credentials in the environment, or GRAPH_TOKEN (Azure). Optional overrides:
 # CRED_ID (the GCP key resource name or ID, the AWS access key ID, or the Azure
-# secret keyId) when credentials.json is missing or unreadable.
+# secret keyId) when credentials.json is missing or unreadable. A GCP or Azure
+# CRED_ID is revoked only when it is provably this member's: recorded for them
+# in .cloud-config.json, the key in credentials.json, an Azure secret labelled
+# for them, or (CRED_ID_FROM_RESPONSE=1, set by the skill's own snippets) taken
+# from this run's create response. Any other ID is recorded as ambiguous.
 #
 # If revocation fails, the credential's non-secret identifier is appended to
 # "unrevoked" in .cloud-config.json, which must then be committed, so the record
@@ -52,6 +56,26 @@ STATUS=1; REVOKED_ID=""; KEEP_PLAINTEXT=""
 # A credential the config records for ANOTHER member (current key, key being
 # rotated, or one queued for revocation) is never this run's: a stale or
 # mistyped CRED_ID must not revoke a teammate's working key or secret
+owned_by_me() {   # $1 = key ID: recorded in the config for this member
+  [ -f "$CONFIG" ] || return 1
+  jq -e --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg id "${1##*/}" '
+    (if .providers then (.providers[] | select(.provider == $p)) else . end)
+    | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][]
+    | .[$e] // empty | (if type == "array" then .[] else . end) | tostring | split("/") | last
+    | select(. == $id)' "$CONFIG" >/dev/null 2>&1
+}
+record_ambiguous() {   # $1 = ID whose owner cannot be established: keep it, never delete
+  echo "ERROR: $PROVIDER credential $1 cannot be tied to $USER_EMAIL (not in credentials.json or this member's records); not revoking it."
+  if [ -f "$CONFIG" ]; then
+    jq --arg p "$PROVIDER" --arg id "$1" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
+      '.unrevoked = ((.unrevoked // []) + [{provider: $p, id: $id, member: $m, ambiguous: true,
+         note: "CRED_ID override whose owner could not be confirmed", at: $t}])' \
+      "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG" \
+      && echo "Recorded as ambiguous under \"unrevoked\" in $CONFIG; check who owns it before revoking it by hand." \
+      || { rm -f "$CONFIG.tmp"; echo "ERROR: could not record it either; note \"$PROVIDER $1\"."; }
+  fi
+  exit 1
+}
 owned_by_other() {   # $1 = key ID (bare, or a GCP resource name)
   [ -f "$CONFIG" ] || return 1
   jq -e --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg id "${1##*/}" '
@@ -63,12 +87,23 @@ owned_by_other() {   # $1 = key ID (bare, or a GCP resource name)
 }
 case "$PROVIDER" in
   gcp)
-    PROJECT_ID="${PROJECT_ID:-$(cfg project_id)}"
-    SA_EMAIL="${SA_EMAIL:-$(cfg service_account)}"
+    # Once GCP is configured, its project and account decide (shell values
+    # from another setup are refused); before that, the caller's values
+    CFG_P="$(cfg project_id)"; CFG_S="$(cfg service_account)"
+    if [ -n "$CFG_P$CFG_S" ]; then
+      { [ -z "${PROJECT_ID:-}" ] || [ "$PROJECT_ID" = "$CFG_P" ]; } && { [ -z "${SA_EMAIL:-}" ] || [ "$SA_EMAIL" = "$CFG_S" ]; } \
+        || { echo "ERROR: PROJECT_ID/SA_EMAIL disagree with .cloud-config.json ($CFG_P, $CFG_S); nothing deleted."; exit 1; }
+      PROJECT_ID="$CFG_P"; SA_EMAIL="$CFG_S"
+    fi
     ID="${CRED_ID:-$(cred .private_key_id)}"
     if [ -n "$ID" ] && owned_by_other "$ID"; then
       echo "ERROR: GCP key ${ID##*/} is recorded in .cloud-config.json for another member; not deleting it. Check CRED_ID / credentials.json."
       exit 1
+    fi
+    # An override must be positively this member's (see the header)
+    if [ -n "${CRED_ID:-}" ] && [ "${CRED_ID_FROM_RESPONSE:-}" != 1 ] \
+       && [ "${CRED_ID##*/}" != "$(cred .private_key_id)" ] && ! owned_by_me "$CRED_ID"; then
+      record_ambiguous "$CRED_ID"
     fi
     case "$ID" in
       projects/*) NAME="$ID" ;;
@@ -208,11 +243,17 @@ case "$PROVIDER" in
       exit 1
     fi
     # A secret labelled for another member is theirs, whatever the config says
+    LBL=""
     if [ -n "$KID" ] && [ -n "$OBJECT_ID" ] && LBL=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
          -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg k "$KID" '.passwordCredentials[] | select(.keyId == $k) | .displayName // empty') \
        && [ -n "$LBL" ] && [ "$LBL" != "claude-code-$USER_EMAIL" ]; then
       echo "ERROR: Azure secret $KID is labelled \"$LBL\", not this member's; not removing it."
       exit 1
+    fi
+    # An override must be positively this member's (see the header)
+    if [ -n "${CRED_ID:-}" ] && [ "${CRED_ID_FROM_RESPONSE:-}" != 1 ] && [ "$CRED_ID" != "$(cred .keyId)" ] \
+       && [ "$LBL" != "claude-code-$USER_EMAIL" ] && ! owned_by_me "$CRED_ID"; then
+      record_ambiguous "$CRED_ID"
     fi
     if [ -z "$KID" ] && [ -n "$OBJECT_ID" ]; then
       KID=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \

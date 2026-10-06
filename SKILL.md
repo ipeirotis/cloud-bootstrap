@@ -219,6 +219,7 @@ A run interrupted after the plaintext is gone needs no recovery here: the workfl
 
 ## Rules
 
+- Run one workflow at a time per checkout. The interrupted-run markers (`credentials.json`, `.cloud-setup-pending.json`) live at fixed paths in the working tree, so two setup, onboarding or rotation runs in the same checkout would share them. Each Claude Code on the Web session has its own checkout, so separate sessions do not collide.
 - Never store plaintext credentials in the repo or git history.
 - Never modify IAM policies on your own initiative. The one exception is the role grants inside First-Time Setup (and an AWS member's user in Add Team Member): there the user has approved the exact roles in Step 3 and supplied a short-lived bootstrap token for that purpose, and only those approved grants are made. Everything else, including any 403 / permission escalation, goes to the user to grant.
 - Prefer granular roles over broad roles (e.g., `roles/cloudfunctions.developer` not `roles/editor`; `S3ReadOnlyAccess` not `AdministratorAccess`).
