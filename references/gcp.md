@@ -68,7 +68,10 @@ clear_prior_gcp() {
   local G A
   for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
     command -v "$G" >/dev/null 2>&1 || continue
-    for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)"; do
+    # Every cached service account too: the ADC file that names the earlier
+    # one may be missing or truncated while gcloud's credential store survives
+    for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)" \
+        $("$G" auth list --format='value(account)' 2>/dev/null | grep -E '\.gserviceaccount\.com$'); do
       [ -z "$A" ] || "$G" auth revoke "$A" >/dev/null 2>&1 || true
     done
     break
@@ -646,22 +649,28 @@ A service-account key carries no member label, and its ID is otherwise stored on
 
 ```bash
 # Provider-aware: in multi-provider configs the map lives in the gcp entry.
-# Snippets may run in fresh shells: take KEY_ID from this shell, else from
-# credentials.json, else from the member's encrypted file (KEY from SKILL.md).
+# The ID is read from the credential itself: the member's encrypted file (KEY
+# from SKILL.md), which is what gets committed, and credentials.json. A KEY_ID
+# left in this shell by another operation would otherwise be recorded for the
+# wrong key, so a preset one must match.
 USER_EMAIL=$(git config user.email)
 [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
-if [ -z "$KEY_ID" ] && [ -f credentials.json ]; then
-  KEY_ID=$(jq -r '.private_key_id // empty' credentials.json)
-fi
-if [ -z "$KEY_ID" ]; then
+PRESET_KEY_ID="${KEY_ID:-}"; ENC_KEY_ID=""; CRED_KEY_ID=""
+[ ! -f credentials.json ] || CRED_KEY_ID=$(jq -r '.private_key_id // empty' credentials.json 2>/dev/null)
+if [ -n "${KEY:-}" ]; then
   for f in ".cloud-credentials.gcp.${USER_EMAIL}.enc" ".cloud-credentials.${USER_EMAIL}.enc"; do
     [ -f "$f" ] || continue
-    KEY_ID=$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$f" 2>/dev/null \
+    ENC_KEY_ID=$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$f" 2>/dev/null \
       | jq -r '.private_key_id // empty')
-    [ -n "$KEY_ID" ] && break
+    [ -n "$ENC_KEY_ID" ] && break
   done
 fi
-[ -n "$KEY_ID" ] || { echo "ERROR: could not determine this member's key ID; nothing recorded."; exit 1; }
+[ -z "$ENC_KEY_ID" ] || [ -z "$CRED_KEY_ID" ] || [ "$ENC_KEY_ID" = "$CRED_KEY_ID" ] \
+  || { echo "ERROR: credentials.json holds key $CRED_KEY_ID but the encrypted file holds $ENC_KEY_ID; nothing recorded. Re-encrypt or remove the stale file."; exit 1; }
+KEY_ID="${ENC_KEY_ID:-$CRED_KEY_ID}"
+[ -n "$KEY_ID" ] || { echo "ERROR: could not read this member's key ID from credentials.json or the encrypted file (set KEY); nothing recorded."; exit 1; }
+[ -z "$PRESET_KEY_ID" ] || [ "${PRESET_KEY_ID##*/}" = "$KEY_ID" ] \
+  || { echo "ERROR: KEY_ID in this shell ($PRESET_KEY_ID) is not the key in this member's credential ($KEY_ID); nothing recorded. Unset KEY_ID."; exit 1; }
 # A different key already recorded for this member (re-onboarding after the
 # .enc went missing) may still be live: queue it in revoke_pending, which
 # rotation step 9 and member removal work through, instead of dropping it
@@ -814,7 +823,10 @@ fi
 PRIOR_SA=$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null || true)
 gcp_fail() {
   local A
-  for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)"; do
+  # (and this repository's service account, cached even when the ADC file
+  # is missing; never other accounts, which on a local machine are the user's)
+  for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)" \
+      "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .service_account // empty' .cloud-config.json 2>/dev/null)"; do
     [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
   done
   rm -f "$ADC_KEY" "$ADC_KEY.new"

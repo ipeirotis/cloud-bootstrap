@@ -3,6 +3,22 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-10-06
+
+Fixes from further Codex review of the vendored copy in ipeirotis/sql-llm#28.
+
+### Fixed
+- Azure Remove Team Member captures the application response before `jq` reads it, so a failed Graph request stops the removal instead of reading as "no labelled secrets" (which let the credential file go while unrecorded legacy secrets stayed active). Failed-setup cleanup warns when its application lookup fails instead of treating it as "no application".
+- AWS: IAM is eventually consistent, so a `NoSuchEntity` right after a create is no longer taken as proof of absence. Remove Team Member, Rollback a Failed Setup (for both the user and the group), the create-group/create-user failure checks in First-Time Setup and Add Team Member, and rotation's key revocation re-check over about a minute before treating a user or key as gone; one that appears meanwhile stops the run for a retry.
+- `scripts/discard-credential.sh` applies the same wait before reading an AWS key or user as already gone; one that appears is revoked as usual instead of being left live and unrecorded.
+- AWS: reformatting `credentials.json` after `create-access-key` is checked in First-Time Setup, Add Team Member and Credential Rotation. A failed write or move, or a result without both key fields, stops before encryption and rolls back (setup, member) or revokes the new key (rotation), instead of committing the nested response the hook cannot read.
+- GCP cleanup no longer depends on the ADC file to find the account to revoke: the SessionStart hooks (cloud containers only) revoke every service account cached in gcloud, and Authenticate and manual activation, which may run on a shared local machine, revoke this repository's configured service account but never other cached accounts.
+- GCP "Record the key's owner" reads the key ID from the credential itself (the encrypted file, else `credentials.json`) and refuses a `KEY_ID` left in the shell that names another key, or a plaintext and encrypted file that disagree.
+- Azure Rollback a Failed Setup re-queries an empty service-principal lookup over about a minute before skipping role-assignment cleanup, so a lagging replica no longer leaves orphaned assignments.
+- Credential Rotation keeps a GCP `OLD_KEY_ID` given as a full resource name as its bare ID, which step 9 appends to the key path.
+- Azure Rollback a Failed Setup confirms a 404 from the application DELETE over about a minute (Entra replication lag) and deletes an application that reappears, instead of dropping the pending record while it may still be live.
+- Credential Rotation step 3 checks `OLD_KEY_ID` before saving it: an ID recorded for another member is refused, a GCP or Azure ID must match the member's `key_ids` entry, and a credential from before `key_ids` existed needs `CONFIRM_KEY=1`. A stale or mistyped ID could otherwise be revoked from the shared service account or application in step 9.
+
 ## [1.5.0] - 2026-10-05
 
 Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).

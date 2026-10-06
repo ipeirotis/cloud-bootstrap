@@ -161,8 +161,9 @@ case "$PROVIDER" in
     [ ${#N} -le 64 ] || N="${N:0:55}-$H"
     PEND_USER="$(PEND iam_user)"; N="${PEND_USER:-$N}"
     # The key's owner, from AWS itself
-    U=""; LOOKUP=""
+    U=""; LOOKUP=""; RECHECK=""
     if [ -n "$AK" ]; then
+      RECHECK=key
       if OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
       then U="$OUT"; else LOOKUP="$OUT"; fi
     elif [ "$MODE" = key ] && [ -n "$(cfg "rotating[\"$USER_EMAIL\"]")" ]; then
@@ -206,8 +207,22 @@ case "$PROVIDER" in
       # the new member's user is the repo-scoped name for this email, as
       # references/aws.md derives it. A credentials.json exists only once that
       # user was created by this run, so it is this run's user.
+      RECHECK=user
       if OUT=$(aws iam get-user --user-name "$N" --query User.UserName --output text 2>&1)
       then U="$OUT"; AK="(all keys of $N)"; else LOOKUP="$OUT"; AK="(user $N)"; fi
+    fi
+    # IAM is eventually consistent: a key or user created moments ago can read
+    # as missing. Count it gone only if the absence holds for about a minute
+    if [ -z "$U" ] && [ -n "$RECHECK" ] && printf '%s' "$LOOKUP" | grep -q NoSuchEntity; then
+      for D in 20 20 20; do
+        sleep "$D"
+        if [ "$RECHECK" = key ]; then
+          OUT=$(aws iam get-access-key-last-used --access-key-id "$AK" --query UserName --output text 2>&1)
+        else
+          OUT=$(aws iam get-user --user-name "$N" --query User.UserName --output text 2>&1)
+        fi && { U="$OUT"; LOOKUP=""; [ "$RECHECK" = key ] || AK="(all keys of $N)"; break; }
+        LOOKUP="$OUT"; printf '%s' "$OUT" | grep -q NoSuchEntity || break
+      done
     fi
     if [ -z "$U" ] && printf '%s' "$LOOKUP" | grep -q NoSuchEntity; then
       # The key (or its user) no longer exists: an earlier attempt removed it

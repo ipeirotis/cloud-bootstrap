@@ -27,6 +27,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
    pcfg() { jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider == \$p)) else . end) | $1 // empty" .cloud-config.json; }
    [ -n "$OLD_KEY_ID" ] || { echo "ERROR: set OLD_KEY_ID to the key being replaced."; exit 1; }
+   # A GCP key listing gives full resource names (projects/.../keys/<id>):
+   # keep the bare ID, which step 9 appends to the service account's key path
+   [ "$PROVIDER" != gcp ] || OLD_KEY_ID="${OLD_KEY_ID##*/}"
    # An earlier, interrupted rotation may already have saved the key being
    # replaced. Never overwrite that record: after step 6 the .enc holds the
    # replacement, so re-reading OLD_KEY_ID from it would name the new key.
@@ -34,6 +37,29 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    if [ -n "$EXISTING" ] && [ "$EXISTING" != "$OLD_KEY_ID" ]; then
      echo "ERROR: an interrupted rotation already saved $EXISTING as the key being replaced; nothing changed."
      echo "If its replacement was encrypted and committed (step 6), resume at step 8. Otherwise revoke any unused new key (scripts/discard-credential.sh) and continue from step 4; rotating[$USER_EMAIL] still names the old key."
+     exit 1
+   fi
+   # The ID must be this member's current credential: steps 8-9 revoke it from
+   # the shared account or application, so a stale, mistyped or teammate's ID
+   # would cut off someone else. (IDs compare by their last path segment.)
+   OTHER=$(jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg k "${OLD_KEY_ID##*/}" '
+     (if .providers then (.providers[] | select(.provider == $p)) else . end)
+     | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)
+     | select([.value | if type == "array" then .[] else . end | split("/") | last] | index($k)) | .key' \
+     .cloud-config.json | head -1)
+   [ -z "$OTHER" ] || { echo "ERROR: $OLD_KEY_ID is recorded for $OTHER, not $USER_EMAIL; nothing changed."; exit 1; }
+   CUR=$(pcfg '.key_ids[$e]')
+   if [ -n "$EXISTING" ]; then
+     :   # resuming the interrupted rotation that saved this same ID
+   elif [ "$PROVIDER" = aws ]; then
+     :   # AWS keys belong to the member's own IAM user; step 9 checks the owner
+   elif [ -n "$CUR" ]; then
+     [ "${CUR##*/}" = "${OLD_KEY_ID##*/}" ] \
+       || { echo "ERROR: $OLD_KEY_ID is not $USER_EMAIL's recorded key (${CUR##*/}); nothing changed."; exit 1; }
+   elif [ "${CONFIRM_KEY:-}" != 1 ]; then
+     # Credentials from before key_ids existed: a person confirms the ID
+     echo "ERROR: no key_ids entry records $USER_EMAIL's current key, so $OLD_KEY_ID cannot be checked."
+     echo "Confirm it is the key in your decrypted credential file (Azure: the secret labelled claude-code-$USER_EMAIL), then re-run with CONFIRM_KEY=1. Nothing changed."
      exit 1
    fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
@@ -63,7 +89,19 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        || { echo "ERROR: could not list $IAM_USER's keys; nothing created."; exit 1; }
      [ "$NKEYS" -lt 2 ] || { echo "ERROR: $IAM_USER already has $NKEYS keys: run step 9 to delete the keys in revoke_pending first; nothing created."; exit 1; }
      (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json)
-     # then reformat (access_key_id/secret_access_key/region) as in aws.md
+     # Reformat as in aws.md, keeping the region already configured. If that
+     # fails, revoke the new key before stopping: the nested response must
+     # never be encrypted, and the key would otherwise stay live
+     AWS_REGION=$(aws_cfg region); AWS_REGION="${AWS_REGION:-us-east-1}"
+     (umask 077 && jq --arg region "$AWS_REGION" '{
+       access_key_id: .AccessKey.AccessKeyId,
+       secret_access_key: .AccessKey.SecretAccessKey,
+       region: $region
+     }' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json \
+       && jq -e '(.access_key_id | type == "string" and length > 0) and (.secret_access_key | type == "string" and length > 0)' \
+            credentials.json >/dev/null \
+       || { rm -f credentials_clean.json; echo "ERROR: could not reformat credentials.json; revoking the new key."
+            bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh aws key; exit 1; }
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
 5. Verify the **new** key works before touching the old one. The provider smoke test alone is not enough: the CLI is still logged in as the old key (or the bootstrap admin), so it would pass without using the replacement. Activate `credentials.json` in an isolated config and confirm the caller identity:
@@ -325,6 +363,15 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
            [ "$OUT" = "$WANT_USER" ] || { echo "ERROR: key $1 belongs to $OUT, not $WANT_USER; not revoking it."; return 1; }
            aws iam delete-access-key --user-name "$OUT" --access-key-id "$1"
          else
+           # A key created moments ago can read as missing until IAM
+           # propagates: the absence must hold before the record is cleared
+           for DELAY in 20 20 20; do
+             printf '%s' "$OUT" | grep -q NoSuchEntity || break
+             sleep "$DELAY"
+             if OUT=$(aws iam get-access-key-last-used --access-key-id "$1" --query UserName --output text 2>&1); then
+               echo "ERROR: key $1 exists after all (IAM was still propagating); retry."; return 1
+             fi
+           done
            printf '%s' "$OUT" | grep -q NoSuchEntity && echo "Key $1 no longer exists; clearing its record."
          fi ;;
        azure)

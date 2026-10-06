@@ -355,7 +355,15 @@ fi
 if ! aws iam create-group --group-name "$GROUP_NAME"; then
   # A lost response can hide a group that was created: keep the record unless
   # the group is confirmed absent
-  if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: something created moments ago can read as
+  # missing, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 20 20; do
+    sleep "$D"
+    if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ] || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
     if [ -z "$GROUP_GENERATED" ]; then
       # A chosen name: the group may be a concurrent setup's that won the
       # race, so the rollback must not touch it unless a person confirms
@@ -396,7 +404,15 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # lost response) or by a concurrent setup for the same email and prefix.
   # Ownership is unknown, so the user is never deleted here: mark the record,
   # and a later rollback removes it only once a person confirms it is this run's
-  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: something created moments ago can read as
+  # missing, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 20 20; do
+    sleep "$D"
+    if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ] || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
     if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
       && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
       echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another setup for the same email."
@@ -426,11 +442,18 @@ Reformat `credentials.json` to a clean structure before encrypting:
 
 ```bash
 # umask 077: the reformatted file holds the secret key too, and mv keeps its mode
+# A failed write or move must stop here: encrypting the original nested
+# response would commit a credential the SessionStart hook cannot read
 (umask 077 && jq --arg region "$AWS_REGION" '{
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
   region: $region
-}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json
+}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json \
+  && jq -e '(.access_key_id | type == "string" and length > 0) and (.secret_access_key | type == "string" and length > 0)' \
+       credentials.json >/dev/null \
+  || { rm -f credentials_clean.json; echo "ERROR: could not reformat credentials.json; nothing is encrypted."
+       if declare -F rollback_aws_setup >/dev/null; then echo "Rolling back."; rollback_aws_setup
+       else echo "Run Rollback a Failed Setup below before retrying."; fi; exit 1; }
 ```
 
 **Important:** Ask the user which AWS region to use and set `AWS_REGION` before running the above command (e.g., `AWS_REGION="us-east-1"`). The chosen region is persisted in the encrypted credentials and in `.cloud-config.json`.
@@ -490,6 +513,16 @@ if [ -n "$IAM_USER" ]; then
     aws iam delete-user --user-name "$IAM_USER" || RB_OK=0
   elif ! gone "$OUT"; then
     RB_OK=0; echo "WARNING: could not list $IAM_USER's keys: $OUT"
+  else
+    # IAM is eventually consistent: a user this setup created moments ago can
+    # read as missing. Count it gone only if the absence holds
+    for D in 20 20 20; do
+      sleep "$D"
+      if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! gone "$OUT"; then
+        RB_OK=0; echo "WARNING: $IAM_USER is not confirmed gone (IAM may still be propagating); re-run this rollback."
+        break
+      fi
+    done
   fi
 fi
 if [ -z "$GROUP_NAME" ]; then
@@ -502,6 +535,16 @@ elif OUT=$(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --que
   aws iam delete-group --group-name "$GROUP_NAME" || RB_OK=0
 elif ! gone "$OUT"; then
   RB_OK=0; echo "WARNING: could not inspect group $GROUP_NAME: $OUT"
+else
+  # As for the user: a group created moments ago can read as missing until
+  # IAM propagates, so count it gone only if the absence holds
+  for D in 20 20 20; do
+    sleep "$D"
+    if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! gone "$OUT"; then
+      RB_OK=0; echo "WARNING: group $GROUP_NAME is not confirmed gone (IAM may still be propagating); re-run this rollback."
+      break
+    fi
+  done
 fi
 if [ "$RB_OK" = 1 ]; then
   # Drop the "unrevoked" entries this rollback resolved (a failed discard may
@@ -618,8 +661,15 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # A user found now was created after the check above: by this run (a lost
   # response) or by an overlapping run for the same email. Ownership is
   # unknown, so mark the record ambiguous: the rollback then never deletes the
-  # user unless a person confirms it is this run's
-  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
+  # user unless a person confirms it is this run's. IAM is eventually
+  # consistent, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 20 20; do
+    sleep "$D"
+    if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ]; then
     if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
       && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
       echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another run for the same email."
@@ -656,7 +706,10 @@ AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws")
   access_key_id: .AccessKey.AccessKeyId,
   secret_access_key: .AccessKey.SecretAccessKey,
   region: $region
-}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json
+}' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json \
+  && jq -e '(.access_key_id | type == "string" and length > 0) and (.secret_access_key | type == "string" and length > 0)' \
+       credentials.json >/dev/null \
+  || { rm -f credentials_clean.json; echo "ERROR: could not reformat credentials.json; rolling back."; rollback_member; exit 1; }
 ```
 
 If a later step fails (encrypting, committing), roll the member back before retrying with "Rollback a Failed Setup" above. The creation snippet recorded this member's user in `.cloud-setup-pending.json` (`member_only`), so the rollback removes exactly that user and its keys, from any shell and whatever `git config user.email` says now, never the shared group, and only in the recorded account. An `ambiguous` record (the user appeared after a failed `create-user`) needs `CONFIRM_USER=1` once the user has confirmed it is this run's.
@@ -894,6 +947,18 @@ if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMet
   aws iam delete-user --user-name "$IAM_USER" \
     || { echo "ERROR: could not delete $IAM_USER; the credential file stays. Retry."; exit 1; }
 elif printf '%s' "$KEYS" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: a user created moments ago can read as
+  # missing before it propagates. Require the absence to hold across the
+  # propagation window before treating the user and its keys as gone
+  for D in 20 20 20; do
+    sleep "$D"
+    if ERR=$(aws iam get-user --user-name "$IAM_USER" 2>&1 >/dev/null); then
+      echo "ERROR: $IAM_USER exists after all (IAM was still propagating); the credential file stays. Re-run this block."
+      exit 1
+    fi
+    printf '%s' "$ERR" | grep -q NoSuchEntity \
+      || { echo "ERROR: could not confirm $IAM_USER is gone: $ERR"; exit 1; }
+  done
   echo "$IAM_USER no longer exists."
 else
   echo "ERROR: could not list $IAM_USER's access keys: $KEYS"; exit 1
