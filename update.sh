@@ -134,6 +134,9 @@ OLD_DIR="$PARENT/.$NAME.old.$$"
 trap 'rm -rf "$TMP" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
 trap 'exit 1' INT TERM HUP
 cp -R "$DEST/." "$NEW/"
+# The file list itself is rewritten below: a symlink there would redirect the
+# write outside the skill (and its content cannot be trusted), so drop it
+if [ -L "$NEW/.installed-files" ]; then rm -f -- "$NEW/.installed-files"; fi
 # A managed path, or a directory on the way to one, that is a symlink would
 # make the removals and the overlay below act on the link's target outside
 # the skill: drop such links so real files replace them

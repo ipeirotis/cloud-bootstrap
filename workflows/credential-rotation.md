@@ -213,9 +213,14 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    else
      ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    fi
-   # The new key's ID, read back from the re-encrypted file
-   NEW_KEY_ID="${NEW_KEY_ID:-$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
-     | jq -r '.private_key_id // .access_key_id // .keyId // empty')}"
+   # The new key's ID, always read back from the re-encrypted file: a NEW_KEY_ID
+   # left in the shell by another run must not be recorded in its place
+   FILE_KEY_ID=$(printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$ENC_FILE" 2>/dev/null \
+     | jq -r '.private_key_id // .access_key_id // .keyId // empty')
+   if [ -n "${NEW_KEY_ID:-}" ] && [ "$NEW_KEY_ID" != "$FILE_KEY_ID" ]; then
+     echo "ERROR: NEW_KEY_ID is $NEW_KEY_ID, but $ENC_FILE holds ${FILE_KEY_ID:-no readable key}; nothing recorded. Unset NEW_KEY_ID."; exit 1
+   fi
+   NEW_KEY_ID="$FILE_KEY_ID"
    # Every provider needs it: an unreadable replacement must never let the old,
    # working key be queued for revocation
    if [ -z "$NEW_KEY_ID" ]; then

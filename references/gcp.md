@@ -424,7 +424,8 @@ if [ "$RB_OK" = 1 ]; then
           or ((.id | contains("/serviceAccounts/\($sa)/keys/")) | not)
              and (.id != "unknown key of \($sa)"))]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
-      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed." \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; $PENDING is kept. Fix the file and re-run this block."; exit 1; }
   fi
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
 else
@@ -733,7 +734,7 @@ if [ -z "$IDS" ]; then
       if .providers then .providers |= map(if .provider == "gcp" then clr else . end) else clr end' \
       .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
       || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Fix it and retry."; exit 1; }
-    git rm -q --ignore-unmatch ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+    git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
     echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
   fi
   echo "ERROR: no recorded key for $MEMBER_EMAIL; find it from the key list first."; exit 1
@@ -772,7 +773,7 @@ done
 if [ -n "$FAILED" ]; then
   echo "ERROR: still active:$FAILED. The member's .enc file and their remaining IDs stay; retry with a fresh token."; exit 1
 fi
-git rm -q --ignore-unmatch ".cloud-credentials.${MEMBER_EMAIL}.enc" ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc"
+git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.${MEMBER_EMAIL}.enc" ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc"
 ```
 
 Commit the removed `.enc` file and the updated `.cloud-config.json` together.

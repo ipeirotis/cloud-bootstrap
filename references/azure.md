@@ -513,7 +513,8 @@ if [ "$RB_OK" = 1 ]; then
           or ((.id | IN($gone[])) | not)
              and ($a == "" or (((.note // "") | startswith("app \($a), ")) | not)))]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
-      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed." \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; .cloud-setup-pending.json is kept. Fix the file and re-run this block."; exit 1; }
   fi
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
 else
@@ -605,7 +606,8 @@ if [ -f .cloud-config.json ]; then
         or ((.id | IN($gone[])) | not)
            and ($a == "" or (((.note // "") | startswith("app \($a), ")) | not)))]
     | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
-    && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+    && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed." \
+    || { rm -f .cloud-config.json.tmp; echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; .cloud-setup-pending.json is kept. Fix the file and re-run this block."; exit 1; }
 fi
 rm -f .cloud-setup-pending.json
 rm -f credentials.json
@@ -643,6 +645,11 @@ WANT_SUB="${WANT_SUB:-$(jq -r '(if .providers then (.providers[] | select(.provi
   || { echo "ERROR: SUBSCRIPTION_ID is $SUBSCRIPTION_ID, but this repo's is $WANT_SUB; nothing assigned. Unset SUBSCRIPTION_ID."; exit 1; }
 SUBSCRIPTION_ID="${WANT_SUB:-${SUBSCRIPTION_ID:-}}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
+# Work in that subscription (and so its tenant), not whatever the CLI has
+# selected: the directory lookup below follows the active one
+az account set --subscription "$SUBSCRIPTION_ID" \
+  && [ "$(az account show --query id -o tsv)" = "$SUBSCRIPTION_ID" ] \
+  || { echo "ERROR: could not select subscription $SUBSCRIPTION_ID; nothing assigned."; exit 1; }
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
 az role assignment create \
@@ -919,7 +926,7 @@ if [ -z "$IDS" ]; then
       if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
       .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
       || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Fix it and retry."; exit 1; }
-    git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+    git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
     echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
   fi
   echo "ERROR: no recorded secret for $MEMBER_EMAIL; set KEY_ID from the listing first."; exit 1
@@ -962,7 +969,7 @@ jq --arg e "$MEMBER_EMAIL" '.unrevoked = [(.unrevoked // [])[] | select(.provide
     or .id != "secret labelled claude-code-\($e)")] | if .unrevoked == [] then del(.unrevoked) else . end' \
   .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
   || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Retry."; exit 1; }
-git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 ```
 
 Commit the removed credential file and `.cloud-config.json` together.

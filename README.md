@@ -143,9 +143,19 @@ curl -fsSL "$BASE/MANIFEST" -o "$STAGE/.manifest" \
   || { echo "ERROR: could not download MANIFEST; nothing changed."; exit 1; }
 FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$STAGE/.manifest"); rm -f "$STAGE/.manifest"
 [ -n "$FILES" ] || { echo "ERROR: MANIFEST is empty; nothing changed."; exit 1; }
+# Refuse any path outside the skill before creating a directory or file
+for FILE in $FILES; do
+  case "$FILE" in /*|*..*) echo "ERROR: MANIFEST lists an unsafe path ($FILE); nothing changed."; exit 1 ;; esac
+done
 for FILE in $FILES; do
   mkdir -p "$STAGE/$(dirname "$FILE")"
   curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
+done
+# As install.sh does: every file SKILL.md names, and the revocation helper,
+# must have arrived before the old copy is replaced
+for REQ in VERSION SKILL.md scripts/discard-credential.sh \
+           $(grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' "$STAGE/SKILL.md" 2>/dev/null | sort -u); do
+  [ -s "$STAGE/$REQ" ] || { echo "ERROR: the release lacks $REQ; nothing changed."; exit 1; }
 done
 # Record what was installed, as install.sh does, so update.sh can later remove
 # files a newer release drops

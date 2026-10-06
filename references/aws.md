@@ -514,7 +514,8 @@ if [ "$RB_OK" = 1 ]; then
           or ((.id | IN($gone[])) | not)
              and ((.id == "(user \($u))" or .id == "(all keys of \($u))" or .id == "(new key of \($u))") | not))]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
-      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed." \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: the identity is gone, but .cloud-config.json could not be updated; $PENDING is kept. Fix the file and re-run this block."; exit 1; }
   fi
   rm -f credentials.json credentials_clean.json "$PENDING"; echo "Rollback complete."
 else
@@ -888,7 +889,7 @@ else
   echo "ERROR: could not list $IAM_USER's access keys: $KEYS"; exit 1
 fi
 # All gone: now remove the member's credential file and any pending entries
-git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
+git --literal-pathspecs rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 # "unrevoked" entries go only when this run proved them gone: the key IDs it
 # deleted, and placeholders naming this user. An entry recorded for another
 # account or an unconfirmed owner stays: it may still be live elsewhere.

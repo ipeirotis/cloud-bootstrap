@@ -165,6 +165,12 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - AWS Add Team Member's post-creation rollback is "Rollback a Failed Setup" (bound to the `member_only` record) instead of a standalone snippet that rebuilt the user name from the current git email.
 - `SKILL.md` carries its version as `metadata.version`: a top-level `version` key fails the skill frontmatter validation. `update.sh` reads either form from an installed copy.
 - The `SKILL.md` description is shortened below the 1024-character frontmatter limit, with the same triggers.
+- Every "Rollback a Failed Setup" keeps `.cloud-setup-pending.json` and exits non-zero when clearing the deleted identity's `unrevoked` entries fails, so the bookkeeping can be retried.
+- `update.sh` drops a symlinked `.installed-files` before reading or rewriting it.
+- The README's manual install refuses unsafe MANIFEST paths and checks the files `SKILL.md` names before replacing the skill, as `install.sh` does.
+- Rotation step 8 always reads the new key ID from the re-encrypted file and stops when a `NEW_KEY_ID` in the shell disagrees.
+- Member removal deletes credential files with `git --literal-pathspecs rm`, so wildcard characters in an email cannot match another member's file.
+- Azure CLI Grant Roles selects and verifies the recorded subscription before looking up the service principal.
 
 ## [1.4.0] - 2026-04-10
 
