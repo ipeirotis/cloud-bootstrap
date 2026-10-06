@@ -3,6 +3,11 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-10-06
+
+### Fixed
+- Azure Add Client Secret: when `addPassword` has an unknown outcome and the follow-up secret listing also fails, a `secret labelled claude-code-<email>` placeholder is recorded under `unrevoked` before stopping, so a possibly live secret is not forgotten when the temporary response is removed. Remove Team Member clears it once every secret labelled for that member is gone, including when its listing finds none.
+
 ## [1.5.1] - 2026-10-06
 
 Fixes from further Codex review of the vendored copy in ipeirotis/sql-llm#28.

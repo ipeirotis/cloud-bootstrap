@@ -819,8 +819,18 @@ list_secret_ids() { local R; R=$(curl -sS --fail "https://graph.microsoft.com/v1
 SECRETS_BEFORE=$(list_secret_ids) || { echo "ERROR: could not list the app's secrets; nothing created."; exit 1; }
 discard_unknown_secret() {
   echo "ERROR: $1; revoking any secret this call created."
-  AFTER=$(list_secret_ids) \
-    || { echo "WARNING: could not list secrets; check for a new claude-code-$USER_EMAIL secret by hand."; exit 1; }
+  if ! AFTER=$(list_secret_ids); then
+    # Nothing would then name a secret that may be live: record the same
+    # placeholder discard-credential.sh uses (no key ID; Remove Team Member
+    # clears it once every secret labelled for this member is gone)
+    jq --arg id "secret labelled claude-code-$USER_EMAIL" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
+      '.unrevoked = ((.unrevoked // []) + [{provider: "azure", id: $id, member: $m, ambiguous: true,
+         note: "an addPassword call failed and the secrets could not be listed afterwards: compare the application secrets labelled for this member with key_ids", at: $t}])' \
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      && echo "WARNING: could not list secrets; recorded under \"unrevoked\" in .cloud-config.json (commit it). Check for a new claude-code-$USER_EMAIL secret by hand." \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: could not list secrets or record the failure: check for a new claude-code-$USER_EMAIL secret by hand before retrying."; }
+    exit 1
+  fi
   # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
   NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$SECRETS_BEFORE" | sed '/^$/d') || true)
   [ -n "$NEW" ] || { echo "No new secret exists; nothing to revoke."; exit 1; }
@@ -978,6 +988,13 @@ if [ -n "${KEY_ID:-}" ]; then
 fi
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
+  # The listing succeeded and shows no secret labelled for this member, so a
+  # "secret labelled ..." placeholder (from a failed addPassword or discard)
+  # names nothing live: clear it
+  jq --arg e "$MEMBER_EMAIL" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "azure" or .member != $e
+      or .id != "secret labelled claude-code-\($e)")] | if .unrevoked == [] then del(.unrevoked) else . end' \
+    .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+    || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; nothing removed. Fix it and retry."; exit 1; }
   # A compromise rotation may already have deleted the member's only
   # credential (revoked_early, no replacement): nothing is live, so clear the
   # member's local state directly
