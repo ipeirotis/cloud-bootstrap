@@ -105,7 +105,10 @@ mkdir -p "$DEST"
 PARENT=$(dirname "$DEST"); NAME=$(basename "$DEST")
 NEW=$(mktemp -d "$PARENT/.$NAME.new.XXXXXX")
 OLD_DIR="$PARENT/.$NAME.old.$$"
-trap 'rm -rf "$TMP" "$NEW"' EXIT
+# On any exit, including an interruption between the two renames below, put
+# the old installation back if the new one is not in place
+trap 'rm -rf "$TMP" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
+trap 'exit 1' INT TERM HUP
 cp -R "$DEST/." "$NEW/"
 # Remove files the previous release installed that this release no longer
 # ships, so a dropped or renamed workflow does not linger. Only paths listed

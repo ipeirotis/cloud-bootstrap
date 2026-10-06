@@ -446,6 +446,15 @@ elif ! gone "$OUT"; then
   RB_OK=0; echo "WARNING: could not inspect group $GROUP_NAME: $OUT"
 fi
 if [ "$RB_OK" = 1 ]; then
+  # The user and all its keys are gone: drop this member's AWS entries under
+  # "unrevoked" (a failed discard may have recorded the key there), or every
+  # later phase check would report a live credential that no longer exists
+  if [ -n "$IAM_USER" ] && [ -f .cloud-config.json ]; then
+    jq --arg e "$(git config user.email)" '
+      .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .member != $e)]
+      | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+  fi
   rm -f credentials.json credentials_clean.json "$PENDING"; echo "Rollback complete."
 else
   echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1

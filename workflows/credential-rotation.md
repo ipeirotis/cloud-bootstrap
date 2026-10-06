@@ -72,7 +72,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
      [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: could not resolve the GCP project and service account from .cloud-config.json."; exit 1; }
      NEW_KEY_ID=$(jq -r .private_key_id credentials.json)
-     TMPCFG=$(mktemp -d); VERIFIED=""
+     TMPCFG=$(mktemp -d) && [ -d "$TMPCFG" ] \
+       || { echo "ERROR: could not create an isolated config directory; nothing verified, run this step again."; exit 1; }
+     VERIFIED=""
      for delay in 0 10 20 40 80; do
        sleep "$delay"
        if env -u CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_CONFIG="$TMPCFG" gcloud auth activate-service-account --key-file=credentials.json 2>/dev/null \
@@ -132,7 +134,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      ```
    - **Azure** (on failure remove the new secret so no live, untracked secret is left):
      ```bash
-     TMPCFG=$(mktemp -d)
+     TMPCFG=$(mktemp -d) && [ -d "$TMPCFG" ] \
+       || { echo "ERROR: could not create an isolated config directory; nothing verified, run this step again."; exit 1; }
      if AZURE_CONFIG_DIR="$TMPCFG" az login --service-principal \
           -u "$(jq -r .appId credentials.json)" -p "$(jq -r .password credentials.json)" \
           --tenant "$(jq -r .tenant credentials.json)" >/dev/null \

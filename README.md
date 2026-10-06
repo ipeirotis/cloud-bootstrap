@@ -129,11 +129,15 @@ DEST=.claude/skills/cloud-bootstrap
 # which the workflows call when a new credential has to be revoked)
 # Download everything to a temp dir first; install only if every file arrived,
 # so a failed download never leaves a mix of old and new files
-FILES=$(curl -fsSL "$BASE/MANIFEST" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$') \
-  || { echo "ERROR: could not download MANIFEST"; exit 1; }
 STAGE=$(mktemp -d) && [ -n "$STAGE" ] && [ -d "$STAGE" ] \
   || { echo "ERROR: could not create a staging directory; nothing changed."; exit 1; }
 trap 'rm -rf "$STAGE"' EXIT
+# To a file first: a download cut off midway must fail here, not leave a
+# shorter list that installs only part of the skill
+curl -fsSL "$BASE/MANIFEST" -o "$STAGE/.manifest" \
+  || { echo "ERROR: could not download MANIFEST; nothing changed."; exit 1; }
+FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$STAGE/.manifest"); rm -f "$STAGE/.manifest"
+[ -n "$FILES" ] || { echo "ERROR: MANIFEST is empty; nothing changed."; exit 1; }
 for FILE in $FILES; do
   mkdir -p "$STAGE/$(dirname "$FILE")"
   curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
