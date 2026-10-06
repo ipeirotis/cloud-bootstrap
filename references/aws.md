@@ -62,9 +62,6 @@ set -e
 # would replace the developer's own AWS identity for the session with the
 # repo's, so local users keep their own credentials.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
-# Hooks run in the session's current directory, which may be a subdirectory
-cd "${CLAUDE_PROJECT_DIR:-.}"
-
 # Undo an earlier activation in this container (the exported keys persisted
 # for the session) whenever this run exits without renewing it: a removed
 # passphrase or a broken file must disable repository auth
@@ -77,6 +74,11 @@ clear_prior_aws() {
   fi
 }
 trap '[ "${AWS_ACTIVATED:-}" = 1 ] || clear_prior_aws; rm -f /tmp/credentials.json' EXIT
+
+# Hooks run in the session's current directory, which may be a subdirectory.
+# Entered only after the cleanup above is armed: a missing or unreadable
+# project directory must still clear an earlier activation
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { echo "WARNING: cannot enter ${CLAUDE_PROJECT_DIR:-.}; repository cloud auth is cleared for this session."; exit 0; }
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"

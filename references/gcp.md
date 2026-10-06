@@ -56,9 +56,6 @@ set -e
 # local machine the fixed key path and gcloud's active account would leak
 # between concurrent sessions, so local users keep their own gcloud login.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
-# Hooks run in the session's current directory, which may be a subdirectory
-cd "${CLAUDE_PROJECT_DIR:-.}"
-
 # Undo an earlier activation in this container (gcloud's stored account, the
 # ADC key file, the persisted export) whenever this run exits without renewing
 # it: a removed passphrase or a broken file must disable repository auth, not
@@ -95,6 +92,11 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
   grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
     echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
 fi
+
+# Hooks run in the session's current directory, which may be a subdirectory.
+# Entered only after the cleanup above is armed: a missing or unreadable
+# project directory must still clear an earlier activation
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { echo "WARNING: cannot enter ${CLAUDE_PROJECT_DIR:-.}; repository cloud auth is cleared for this session."; exit 0; }
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"

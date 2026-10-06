@@ -42,12 +42,14 @@ set -e
 # concurrent sessions would overwrite each other's principal and subscription;
 # local users keep their own `az login`.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
-# Hooks run in the session's current directory, which may be a subdirectory
-cd "${CLAUDE_PROJECT_DIR:-.}"
-
 # Log out an earlier activation in this container (az keeps its login in a
 # persistent token cache) whenever this run exits without renewing it
 trap '[ "${AZ_ACTIVATED:-}" = 1 ] || { command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true; }; rm -f /tmp/credentials.json' EXIT
+
+# Hooks run in the session's current directory, which may be a subdirectory.
+# Entered only after the cleanup above is armed: a missing or unreadable
+# project directory must still clear an earlier activation
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { echo "WARNING: cannot enter ${CLAUDE_PROJECT_DIR:-.}; repository cloud auth is cleared for this session."; exit 0; }
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"

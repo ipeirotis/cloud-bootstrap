@@ -22,6 +22,13 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 1
 fi
 
+# A symlinked skill directory would be followed by the copy below, pulling
+# every file from its target (shared or unmanaged) into the commit: refuse it
+if [ -L "$DEST" ]; then
+  echo "ERROR: $DEST is a symlink; replace it with a real directory (or reinstall) first. Nothing changed." >&2
+  exit 1
+fi
+
 # Determine installed version
 INSTALLED_VERSION=""
 if [ -f "$DEST/VERSION" ]; then

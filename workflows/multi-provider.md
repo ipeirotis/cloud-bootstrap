@@ -74,9 +74,6 @@ set -e
 # Claude Code on the Web only (each session is its own container); see the
 # single-provider hook in references/gcp.md for why it skips local machines.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
-# Hooks run in the session's current directory, which may be a subdirectory
-cd "${CLAUDE_PROJECT_DIR:-.}"
-
 # The loop decrypts each provider's key to /tmp/credentials.json and may then
 # spend minutes installing a CLI; remove the plaintext however the hook ends
 # (timeout, interruption, a failing command). The GCP ADC copy is separate.
@@ -152,6 +149,11 @@ expected_iam_user() {   # $1 = email, $2 = user prefix
 CONFIG=".cloud-config.json"
 # A missing or unreadable config fails closed for every provider
 all_configured() { AWS_CONFIGURED=1; AZ_CONFIGURED=1; clear_gcp_token; }
+# Hooks run in the session's current directory, which may be a subdirectory.
+# Entered only after the cleanup above is armed: a missing or unreadable
+# project directory must still clear an earlier activation
+cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || { all_configured; echo "WARNING: cannot enter ${CLAUDE_PROJECT_DIR:-.}; repository cloud auth is cleared for this session."; exit 0; }
+
 if [ ! -f "$CONFIG" ]; then all_configured; exit 0; fi
 
 PROVIDER_COUNT=$(jq -r '.providers | length' "$CONFIG" 2>/dev/null) || { all_configured; exit 0; }

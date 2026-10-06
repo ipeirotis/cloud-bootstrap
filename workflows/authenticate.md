@@ -52,12 +52,18 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    clear_prior() {
      case "$PROVIDER" in
        gcp)
-         A=$(jq -r '.client_email // empty' /tmp/gcp-adc-credentials.json 2>/dev/null)
+         A=$(jq -r '.client_email // empty' /tmp/gcp-adc-credentials.json 2>/dev/null || true)
          [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
          rm -f /tmp/gcp-adc-credentials.json
+         # An ambient access token outranks gcloud's account (see
+         # references/gcp.md): clear it too, or later commands keep running
+         # as that principal
+         unset CLOUDSDK_AUTH_ACCESS_TOKEN
          if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
            sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
            echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
+           grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" || \
+             echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
          fi ;;
        aws)
          # A profile or session token left selected would let later commands
