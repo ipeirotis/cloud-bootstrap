@@ -162,7 +162,7 @@ mv "$NEW" "$DEST" || { echo "ERROR: could not move the new copy into place; the 
 rm -rf "$OLD_DIR"
 
 git add "$DEST"
-git commit -m "Add cloud-bootstrap skill"
+git commit -m "Add cloud-bootstrap skill" -- "$DEST"   # only the skill, not anything else already staged
 ```
 
 **Or** just tell Claude Code on the Web:

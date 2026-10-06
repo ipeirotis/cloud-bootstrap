@@ -228,7 +228,17 @@ case "$PROVIDER" in
       record_unrevoked "${AK:-unknown access key}" "owner could not be looked up"
     fi ;;
   azure)
-    APP_ID="$(cred .appId)"; APP_ID="${APP_ID:-$(cfg service_account)}"
+    # The application: the configured one (or, before config exists, the setup
+    # record's). A credentials.json naming a different app is stale or copied
+    # from elsewhere: refuse rather than remove another application's secret.
+    EXPECT_APP="$(cfg service_account)"
+    EXPECT_APP="${EXPECT_APP:-$(jq -r 'select(.provider == "azure") | .app_id // empty' .cloud-setup-pending.json 2>/dev/null)}"
+    APP_ID="$(cred .appId)"
+    if [ -n "$APP_ID" ] && [ -n "$EXPECT_APP" ] && [ "$APP_ID" != "$EXPECT_APP" ]; then
+      echo "ERROR: credentials.json is for application $APP_ID, but this repo's is $EXPECT_APP; nothing removed. Check the file."
+      exit 1
+    fi
+    APP_ID="${APP_ID:-$EXPECT_APP}"
     OBJECT_ID="${OBJECT_ID:-}"
     if [ -z "$OBJECT_ID" ] && [ -n "$APP_ID" ] && [ -n "${GRAPH_TOKEN:-}" ]; then
       OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \

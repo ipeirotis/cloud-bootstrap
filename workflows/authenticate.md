@@ -37,7 +37,8 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
    # the shared created_at only when git history is unavailable.
    COMMIT_TS=$(git log --follow --diff-filter=AM -1 --format=%ct -- "$ENC_FILE" 2>/dev/null)
    if [ -z "$COMMIT_TS" ]; then
-     COMMIT_TS=$(date -d "$(jq -r '.created_at // empty' .cloud-config.json)" +%s 2>/dev/null)
+     # Multi-provider configs keep created_at in each provider's entry
+     COMMIT_TS=$(date -d "$(jq -r --arg p "$PROVIDER" '(if .providers then (.providers[] | select(.provider == $p) | .created_at) else .created_at end) // empty' .cloud-config.json)" +%s 2>/dev/null)
    fi
    if [ -n "$COMMIT_TS" ] && [ "$(( ( $(date +%s) - COMMIT_TS ) / 86400 ))" -gt 180 ]; then
      echo "NOTE: $PROVIDER credentials are over 180 days old — consider rotating (see Credential Rotation)."

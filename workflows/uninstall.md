@@ -28,7 +28,7 @@ To completely remove cloud-bootstrap from a repo:
      # Nothing to do when the file or its SessionStart list is missing (an
      # interrupted setup, a hook removed by hand): uninstall must keep going
      [ ! -f .claude/settings.json ] || { jq 'if (.hooks.SessionStart | type) == "array" then
-           .hooks.SessionStart |= (map(.hooks |= ((. // []) | map(select((.command // "") | contains("cloud-auth.sh") | not))))
+           .hooks.SessionStart |= (map(.hooks |= ((. // []) | map(select((.command // "") | test("(^|[^A-Za-z0-9_.-])\\.claude/hooks/cloud-auth\\.sh($|[^A-Za-z0-9_.-])") | not))))
              | map(select(.hooks | length > 0)))
            | (if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end)
            | (if .hooks == {} then del(.hooks) else . end)
