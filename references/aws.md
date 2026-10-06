@@ -358,7 +358,7 @@ if ! aws iam create-group --group-name "$GROUP_NAME"; then
   # IAM is eventually consistent: something created moments ago can read as
   # missing, so a NoSuchEntity must hold across the propagation window
   FOUND=0
-  for D in 0 20 40; do
+  for D in 0 20 20 20; do
     sleep "$D"
     if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1); then FOUND=1; break; fi
     printf '%s' "$OUT" | grep -q NoSuchEntity || break
@@ -407,7 +407,7 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # IAM is eventually consistent: something created moments ago can read as
   # missing, so a NoSuchEntity must hold across the propagation window
   FOUND=0
-  for D in 0 20 40; do
+  for D in 0 20 20 20; do
     sleep "$D"
     if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
     printf '%s' "$OUT" | grep -q NoSuchEntity || break
@@ -509,7 +509,7 @@ if [ -n "$IAM_USER" ]; then
   else
     # IAM is eventually consistent: a user this setup created moments ago can
     # read as missing. Count it gone only if the absence holds
-    for D in 20 40 60; do
+    for D in 20 20 20; do
       sleep "$D"
       if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! gone "$OUT"; then
         RB_OK=0; echo "WARNING: $IAM_USER is not confirmed gone (IAM may still be propagating); re-run this rollback."
@@ -647,7 +647,7 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # user unless a person confirms it is this run's. IAM is eventually
   # consistent, so a NoSuchEntity must hold across the propagation window
   FOUND=0
-  for D in 0 20 40; do
+  for D in 0 20 20 20; do
     sleep "$D"
     if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
     printf '%s' "$OUT" | grep -q NoSuchEntity || break
@@ -930,7 +930,7 @@ elif printf '%s' "$KEYS" | grep -q NoSuchEntity; then
   # IAM is eventually consistent: a user created moments ago can read as
   # missing before it propagates. Require the absence to hold across the
   # propagation window before treating the user and its keys as gone
-  for D in 20 40 60; do
+  for D in 20 20 20; do
     sleep "$D"
     if ERR=$(aws iam get-user --user-name "$IAM_USER" 2>&1 >/dev/null); then
       echo "ERROR: $IAM_USER exists after all (IAM was still propagating); the credential file stays. Re-run this block."

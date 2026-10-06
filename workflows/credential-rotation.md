@@ -327,7 +327,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
          else
            # A key created moments ago can read as missing until IAM
            # propagates: the absence must hold before the record is cleared
-           for DELAY in 20 40 60; do
+           for DELAY in 20 20 20; do
              printf '%s' "$OUT" | grep -q NoSuchEntity || break
              sleep "$DELAY"
              if OUT=$(aws iam get-access-key-last-used --access-key-id "$1" --query UserName --output text 2>&1); then
