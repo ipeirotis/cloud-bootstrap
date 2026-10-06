@@ -823,9 +823,10 @@ fi
 PRIOR_SA=$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null || true)
 gcp_fail() {
   local A
-  # (and every cached service account, which outlives a missing ADC file)
+  # (and this repository's service account, cached even when the ADC file
+  # is missing; never other accounts, which on a local machine are the user's)
   for A in "$PRIOR_SA" "$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null)" \
-      $(gcloud auth list --format='value(account)' 2>/dev/null | grep -E '\.gserviceaccount\.com$'); do
+      "$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .service_account // empty' .cloud-config.json 2>/dev/null)"; do
     [ -z "$A" ] || gcloud auth revoke "$A" >/dev/null 2>&1 || true
   done
   rm -f "$ADC_KEY" "$ADC_KEY.new"
