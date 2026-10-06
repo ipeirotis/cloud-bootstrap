@@ -58,10 +58,12 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
            echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
          fi ;;
        aws)
-         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+         # A profile or session token left selected would let later commands
+         # authenticate as something else instead of failing
+         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN
          if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
-           sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
-           echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+           sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d; /^export AWS_PROFILE=/d; /^export AWS_SESSION_TOKEN=/d' "$CLAUDE_ENV_FILE"
+           echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN" >> "$CLAUDE_ENV_FILE"
          fi ;;
        azure)
          command -v az >/dev/null 2>&1 && az logout >/dev/null 2>&1 || true ;;

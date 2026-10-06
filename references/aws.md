@@ -601,6 +601,12 @@ If a later step fails (encrypting, committing), roll the member back before retr
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
 USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
 IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
+# Only in this repo's account: a same-named user elsewhere is not this member
+AWS_ACCOUNT_ID=$(aws_cfg project_id)
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
+[ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing deleted."; exit 1; }
 for k in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
   aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"
 done
@@ -617,6 +623,15 @@ aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\"
 # The group First-Time Setup printed, else the configured one
 GROUP_NAME="${GROUP_NAME:-$(aws_cfg service_account)}"
 [ -n "$GROUP_NAME" ] || { echo "ERROR: set GROUP_NAME to the group First-Time Setup created."; exit 1; }
+# Change nothing unless these credentials are in this repo's account (from the
+# config, or during setup from its record): group names are only unique per
+# account, and the policy commands take no account
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws_cfg project_id)}"
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(jq -r 'select(.provider=="aws") | .account // empty' .cloud-setup-pending.json 2>/dev/null)}"
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
+  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing changed."; exit 1; }
+[ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
+  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing changed."; exit 1; }
 ```
 
 For AWS managed policies:
@@ -688,7 +703,7 @@ if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN#arn:*
   # Drop keys an earlier activation persisted too, or later shells restore them
   if [ -n "$CLAUDE_ENV_FILE" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
     sed -i '/^export AWS_ACCESS_KEY_ID=/d; /^export AWS_SECRET_ACCESS_KEY=/d; /^export AWS_DEFAULT_REGION=/d' "$CLAUDE_ENV_FILE"
-    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION" >> "$CLAUDE_ENV_FILE"
+    echo "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PROFILE AWS_SESSION_TOKEN" >> "$CLAUDE_ENV_FILE"
   fi
   echo "ERROR: these keys are for ${CALLER_ARN:-an unknown identity}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activated."
   exit 1
@@ -761,12 +776,14 @@ IAM_USER=$(iam_user_name "$MEMBER_EMAIL" "$USER_PREFIX")
 # require this member's own credential file and refuse when another member's
 # email maps to the same user, unless a person confirmed it (CONFIRM_USER=1)
 if [ "$USER_PREFIX" = "claude-agent" ] && [ "${CONFIRM_USER:-}" != 1 ]; then
-  [ -f ".cloud-credentials.${MEMBER_EMAIL}.enc" ] || [ -f ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ] \
+  # The naming mode comes from the config, not from the file name: an email
+  # can itself begin with "aws." or "gcp."
+  if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then PFX="aws."; else PFX=""; fi
+  [ -f ".cloud-credentials.${PFX}${MEMBER_EMAIL}.enc" ] \
     || { echo "ERROR: no credential file for $MEMBER_EMAIL; check the address (or set CONFIRM_USER=1 once confirmed)."; exit 1; }
-  for F in .cloud-credentials.*.enc; do
+  for F in .cloud-credentials.${PFX}*.enc; do
     [ -e "$F" ] || continue
-    E=${F#.cloud-credentials.}; E=${E%.enc}
-    case "$E" in gcp.*|azure.*) continue ;; aws.*) E=${E#aws.} ;; esac
+    E=${F#.cloud-credentials.$PFX}; E=${E%.enc}
     if [ "$E" != "$MEMBER_EMAIL" ] && [ "$(iam_user_name "$E" "$USER_PREFIX")" = "$IAM_USER" ]; then
       echo "ERROR: $E maps to the same IAM user $IAM_USER as $MEMBER_EMAIL; nothing deleted. Resolve with the user (CONFIRM_USER=1 to proceed)."
       exit 1

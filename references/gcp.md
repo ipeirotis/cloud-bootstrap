@@ -396,6 +396,15 @@ ROLE="roles/ROLE_NAME"
 # hard-coded name, which could be a different, pre-existing account.
 SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
 [ -n "$SA_EMAIL" ] || { echo "ERROR: SA_EMAIL is not set; run Create Service Account first."; exit 1; }
+# The project whose policy changes: the configured one (or during setup the
+# one in its record); a stale PROJECT_ID that disagrees with it is refused
+CFG_PROJECT=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)
+CFG_PROJECT="${CFG_PROJECT:-$(jq -r 'select(.provider=="gcp") | .project_id // empty' .cloud-setup-pending.json 2>/dev/null)}"
+if [ -n "$CFG_PROJECT" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PROJECT_ID" != "$CFG_PROJECT" ]; then
+  echo "ERROR: PROJECT_ID=$PROJECT_ID but this repo is configured for $CFG_PROJECT; no role granted."; exit 1
+fi
+PROJECT_ID="${CFG_PROJECT:-${PROJECT_ID:-}}"
+[ -n "$PROJECT_ID" ] || { echo "ERROR: no GCP project in .cloud-config.json or the setup record; set PROJECT_ID."; exit 1; }
 MEMBER="serviceAccount:$SA_EMAIL"
 
 # Private, unique scratch space (no fixed /tmp names to race on or clobber)
