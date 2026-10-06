@@ -348,10 +348,19 @@ if ! aws iam create-group --group-name "$GROUP_NAME"; then
     if [ -z "$GROUP_GENERATED" ]; then
       # A chosen name: the group may be a concurrent setup's that won the
       # race, so the rollback must not touch it unless a person confirms
-      jq '. + {ambiguous_group: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
-        && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
-      echo "ERROR: create-group failed and $GROUP_NAME exists, created by this run or by another setup using the same name."
-      echo "Check with the user before running Rollback a Failed Setup with CONFIRM_GROUP=1 (or delete the record if it is not this run's)."
+      if jq '. + {ambiguous_group: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+        && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
+        echo "ERROR: create-group failed and $GROUP_NAME exists, created by this run or by another setup using the same name."
+        echo "Check with the user before running Rollback a Failed Setup with CONFIRM_GROUP=1 (or delete the record if it is not this run's)."
+      else
+        # Unmarked, the record would let a rollback delete a group that may be
+        # another setup's. It names nothing else yet, so drop it and leave the
+        # group to a person
+        rm -f .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+        echo "ERROR: create-group failed, $GROUP_NAME exists, and the record could not be marked as unconfirmed, so it was removed."
+        echo "Check with the user whether $GROUP_NAME is this run's; only then delete it by hand (aws iam delete-group --group-name $GROUP_NAME)."
+        [ ! -e .cloud-setup-pending.json ] || echo "ERROR: .cloud-setup-pending.json could not be removed either; delete it by hand before any rollback."
+      fi
     else
       echo "ERROR: create-group failed and $GROUP_NAME may exist; run Rollback a Failed Setup (the record is kept)."
     fi
@@ -563,10 +572,19 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # unknown, so mark the record ambiguous: the rollback then never deletes the
   # user unless a person confirms it is this run's
   if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
-    jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
-      && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
-    echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another run for the same email."
-    echo "Check with the user (and any teammate onboarding the same email) before running Rollback a Failed Setup with CONFIRM_USER=1."
+    if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+      && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
+      echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another run for the same email."
+      echo "Check with the user (and any teammate onboarding the same email) before running Rollback a Failed Setup with CONFIRM_USER=1."
+    else
+      # Unmarked, the record would let a rollback delete a user that may be an
+      # overlapping run's. No key or group membership exists yet, so drop the
+      # record and leave the user to a person
+      rm -f .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+      echo "ERROR: create-user failed, $IAM_USER exists, and the record could not be marked as unconfirmed, so it was removed."
+      echo "Check with the user (and any teammate onboarding the same email) whether $IAM_USER is this run's; only then delete it by hand (aws iam delete-user --user-name $IAM_USER)."
+      [ ! -e .cloud-setup-pending.json ] || echo "ERROR: .cloud-setup-pending.json could not be removed either; delete it by hand before any rollback."
+    fi
   elif printf '%s' "$OUT" | grep -q NoSuchEntity; then
     rm -f .cloud-setup-pending.json
     echo "ERROR: could not create IAM user $IAM_USER; nothing was created."
@@ -810,10 +828,16 @@ if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMet
       || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
     DELETED_KEYS="$DELETED_KEYS $KEY_ID"
     # Clear its "unrevoked" entry right away: a retry after a later failure no
-    # longer sees this key, so it could not prove it gone then
-    jq --arg id "$KEY_ID" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .id != $id)]
+    # longer sees this key, so it could not prove it gone then. Stop if that
+    # write fails, for the same reason
+    if ! { jq --arg id "$KEY_ID" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .id != $id)]
       | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
-      && mv .cloud-config.json.tmp .cloud-config.json || rm -f .cloud-config.json.tmp
+      && mv .cloud-config.json.tmp .cloud-config.json; }; then
+      rm -f .cloud-config.json.tmp
+      echo "ERROR: deleted key $KEY_ID but could not update .cloud-config.json; the credential file stays."
+      echo "Fix the file, remove any \"unrevoked\" entry for $KEY_ID by hand (the key is gone), then retry."
+      exit 1
+    fi
   done
   # delete-user fails while any group membership remains: remove the ones the
   # user still has (none, if an earlier attempt already did)

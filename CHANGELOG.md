@@ -129,6 +129,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP service-account creation fails on any HTTP error (409 = the account already exists) instead of continuing to grant roles and create keys for a pre-existing account.
 - Uninstall removes the `.gitignore` rules setup actually adds (`/credentials.json`, `/credentials_clean.json`), plus the pre-1.5 forms.
 - Setup's `.gitignore` entries are anchored to the repo root (`/credentials.json`, `/credentials_clean.json`); the repo-relative `/tmp/` entry, which never covered the system `/tmp`, is gone.
+- AWS: when the pending record cannot be marked as unconfirmed after a lost `create-group` (chosen name) or member `create-user` response, setup removes the record instead of leaving one a rollback would act on, and tells the user to resolve the group or user by hand. AWS member removal stops if it cannot clear a deleted key's `unrevoked` entry, since a retry no longer sees that key.
 
 ## [1.4.0] - 2026-04-10
 
