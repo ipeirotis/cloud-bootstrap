@@ -156,6 +156,18 @@ if [ -z "$SA_CFG" ] || [ "$(jq -r '.client_email // empty' "$NEW_KEY" 2>/dev/nul
   rm -f "$NEW_KEY"
   exit 0
 fi
+# ...and only this member's own key: key_ids maps each member to theirs (an
+# open rotation, which commits the new key before key_ids names it, excepted)
+WHY=$(jq -r --arg e "$USER_EMAIL" --arg k "$(jq -r '.private_key_id // empty' "$NEW_KEY")" \
+  '(if .providers then (.providers[] | select(.provider == "gcp")) else . end) | (.key_ids // {}) as $m
+  | if any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its key is recorded for another member"
+    elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its key differs from the key_ids entry for this member"
+    else "ok" end' "$CONFIG" 2>/dev/null)
+if [ "$WHY" != ok ]; then
+  echo "WARNING: $ENC_FILE not activated: ${WHY:-its key could not be checked}."
+  rm -f "$NEW_KEY"
+  exit 0
+fi
 mv -f "$NEW_KEY" "$ADC_KEY"
 
 if ! gcloud auth activate-service-account --key-file="$ADC_KEY" 2>/dev/null; then
@@ -724,6 +736,14 @@ gcp_fail() {
 SA_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)
 [ -n "$SA_CFG" ] && [ "$(jq -r '.client_email // empty' "$ADC_KEY.new")" = "$SA_CFG" ] \
   || gcp_fail "$ENC_FILE is not a key for ${SA_CFG:-the configured service account}"
+# ...and only this member's own key: key_ids maps each member to theirs (an
+# open rotation, which commits the new key before key_ids names it, excepted)
+WHY=$(jq -r --arg e "$(git config user.email)" --arg k "$(jq -r '.private_key_id // empty' "$ADC_KEY.new")" \
+  '(if .providers then (.providers[] | select(.provider == "gcp")) else . end) | (.key_ids // {}) as $m
+  | if any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its key is recorded for another member"
+    elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its key differs from the key_ids entry for this member"
+    else "ok" end' .cloud-config.json 2>/dev/null)
+[ "$WHY" = ok ] || { rm -f "$ADC_KEY.new"; gcp_fail "$ENC_FILE not activated: ${WHY:-its key could not be checked}"; }
 mv -f "$ADC_KEY.new" "$ADC_KEY"
 gcloud auth activate-service-account --key-file="$ADC_KEY" \
   || gcp_fail "gcloud could not activate the key (it may be revoked)"

@@ -133,6 +133,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Azure CLI rollback selects and verifies the setup's recorded subscription before looking anything up, so a CLI signed in to another tenant cannot make it report "nothing was created" and delete the record while the application stays live.
 - A failed encryption in first-time setup removes only its temp file and the plaintext, never an existing `.enc` file of the same name, which the staged write leaves untouched until the final rename.
 - `discard-credential.sh` (Azure) uses a supplied or inherited `OBJECT_ID` only after confirming it resolves to the configured application's `appId`; otherwise it looks the application up by `APP_ID`, so the label fallback never removes a secret from an unrelated application.
+- GCP activation (SessionStart hook template, multi-provider hook, Activate snippet) also checks the decrypted key's `private_key_id` against `key_ids`: a key recorded for another member, or one that differs from the member's own entry outside an open rotation, is not activated.
+- `discard-credential.sh` (GCP) counts a 404 as "already deleted" only once it persists across retries, since a key created moments earlier can read as missing for a minute or more.
+- Uninstall matches the `## Cloud credentials` heading case-insensitively.
 
 ## [1.4.0] - 2026-04-10
 

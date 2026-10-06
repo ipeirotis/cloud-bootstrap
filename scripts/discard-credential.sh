@@ -115,10 +115,16 @@ case "$PROVIDER" in
     case "$NAME" in projects/?*/serviceAccounts/?*/keys/?*) ;; *) NAME="" ;; esac
     HTTP=000
     if [ -n "$NAME" ] && [ -n "${TOKEN:-}" ]; then
-      HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://iam.googleapis.com/v1/$NAME" \
-        -H "Authorization: Bearer $TOKEN")
+      # A key created moments ago can read as missing (404) for a minute or
+      # more: count 404 as gone only once it persists across retries
+      for DELAY in 0 20 40 60; do
+        sleep "$DELAY"
+        HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://iam.googleapis.com/v1/$NAME" \
+          -H "Authorization: Bearer $TOKEN")
+        [ "$HTTP" = 404 ] || break
+      done
     fi
-    # 404: the key no longer exists (an earlier attempt deleted it), so it is gone
+    # 404 throughout: the key no longer exists (an earlier attempt deleted it)
     if [ "$HTTP" = 200 ] || [ "$HTTP" = 404 ]; then
       echo "GCP key ${NAME##*/} is deleted."; STATUS=0; REVOKED_ID="${NAME##*/}"
     else

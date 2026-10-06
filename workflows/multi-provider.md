@@ -216,6 +216,17 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "WARNING: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}; skipping GCP."
         rm -f /tmp/credentials.json; continue
       fi
+      # ...and only this member's own key: key_ids maps each member to theirs (an
+      # open rotation, which commits the new key before key_ids names it, excepted)
+      WHY=$(jq -r --arg e "$USER_EMAIL" --arg k "$(jq -r '.private_key_id // empty' /tmp/credentials.json)" \
+        '(if .providers then (.providers[] | select(.provider == "gcp")) else . end) | (.key_ids // {}) as $m
+        | if any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its key is recorded for another member"
+          elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its key differs from the key_ids entry for this member"
+          else "ok" end' "$CONFIG" 2>/dev/null)
+      if [ "$WHY" != ok ]; then
+        echo "WARNING: $ENC_FILE not used: ${WHY:-its key could not be checked}; skipping GCP."
+        rm -f /tmp/credentials.json; continue
+      fi
       GCP_NEW_SA="$SA_CFG"   # from here on, a failure revokes it (clear_prior_gcp)
       if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
         echo "WARNING: gcloud auth failed — skipping GCP."

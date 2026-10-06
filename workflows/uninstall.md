@@ -40,7 +40,7 @@ To completely remove cloud-bootstrap from a repo:
    rm -f credentials.json credentials_clean.json .cloud-setup-pending.json .cloud-credentials.*.tmp.*
    ```
    Then remove the rules setup added: the `# Cloud -- never commit plaintext credentials` comment, `/credentials.json`, `/credentials_clean.json`, and `/.cloud-setup-pending.json`. Older setups wrote `credentials.json`, `credentials_clean.json`, and `/tmp/` instead; remove those if present. Check `git status --porcelain --ignored` shows none of these files before committing.
-6. **Remove the `## Cloud Credentials` section from the repo's agent-instructions file(s)** — `CLAUDE.md`, `AGENTS.md`, or both; check each (`grep -n '^## Cloud Credentials' CLAUDE.md AGENTS.md`) and delete that section, up to the next `## ` heading, wherever it appears.
+6. **Remove the `## Cloud Credentials` section from the repo's agent-instructions file(s)** — `CLAUDE.md`, `AGENTS.md`, or both. The heading may be in any case (`## Cloud credentials` too), so check each with `grep -in '^## Cloud credentials' CLAUDE.md AGENTS.md` and delete that section, up to the next `## ` heading, wherever it appears.
 7. **Commit all changes.**
 
 **Important:** This does not remove the skill files from `.claude/skills/cloud-bootstrap/`. Those can be kept (no secrets) or removed separately.
