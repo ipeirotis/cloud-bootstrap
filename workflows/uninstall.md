@@ -25,11 +25,15 @@ To completely remove cloud-bootstrap from a repo:
    - Delete `.claude/hooks/cloud-auth.sh`
    - In `.claude/settings.json`, remove only the hook whose command runs `cloud-auth.sh`; keep any other SessionStart hooks (drop a matcher group or `SessionStart` itself only if nothing is left in it, and delete the file only if nothing else remains):
      ```bash
-     jq '.hooks.SessionStart |= (map(.hooks |= map(select((.command // "") | contains("cloud-auth.sh") | not)))
-           | map(select(.hooks | length > 0)))
-         | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
-         | if .hooks == {} then del(.hooks) else . end' .claude/settings.json > .claude/settings.json.tmp \
-       && mv .claude/settings.json.tmp .claude/settings.json
+     # Nothing to do when the file or its SessionStart list is missing (an
+     # interrupted setup, a hook removed by hand): uninstall must keep going
+     [ ! -f .claude/settings.json ] || { jq 'if (.hooks.SessionStart | type) == "array" then
+           .hooks.SessionStart |= (map(.hooks |= ((. // []) | map(select((.command // "") | contains("cloud-auth.sh") | not))))
+             | map(select(.hooks | length > 0)))
+           | (if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end)
+           | (if .hooks == {} then del(.hooks) else . end)
+         else . end' .claude/settings.json > .claude/settings.json.tmp \
+       && mv .claude/settings.json.tmp .claude/settings.json; }
      ```
 5. **Delete any plaintext an interrupted run left, then clean up `.gitignore`:** these files are ignored only until the next step removes the rules, and a later `git add -A` would commit a live key. (Step 1's revocation covers the credentials in them; for one not listed anywhere, run "Recovering an Interrupted Run" in SKILL.md first.)
    ```bash

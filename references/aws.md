@@ -155,7 +155,7 @@ ACCOUNT=$(jq -r '.project_id // empty' "$CONFIG" 2>/dev/null)
 PREFIX=$(jq -r '.iam_user_prefix // empty' "$CONFIG" 2>/dev/null); PREFIX="${PREFIX:-claude-agent}"
 WANT_USER=$(expected_iam_user "$USER_EMAIL" "$PREFIX")
 read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
-if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN#arn:*:}" != "iam::$ACCOUNT:user/$WANT_USER" ]; then
   echo "WARNING: $ENC_FILE is for ${CALLER_ARN:-an unknown identity (lookup failed)}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activating it."
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
   exit 0
@@ -633,7 +633,7 @@ iam_user_name() {   # $1 = email, $2 = user prefix (see "IAM Names")
 ACCOUNT=$(aws_cfg project_id); PREFIX=$(aws_cfg iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
 WANT_USER=$(iam_user_name "$(git config user.email)" "$PREFIX")
 read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
-if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN#arn:*:}" != "iam::$ACCOUNT:user/$WANT_USER" ]; then
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
   # Drop keys an earlier activation persisted too, or later shells restore them
   if [ -n "$CLAUDE_ENV_FILE" ] && [ -f "$CLAUDE_ENV_FILE" ]; then

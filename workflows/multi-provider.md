@@ -270,7 +270,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       PREFIX=$(jq -r ".providers[$i].iam_user_prefix // empty" "$CONFIG"); PREFIX="${PREFIX:-claude-agent}"
       WANT_USER=$(expected_iam_user "$USER_EMAIL" "$PREFIX")
       read -r CALLER CALLER_ARN <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text 2>/dev/null || true)"
-      if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN:-}" != "arn:aws:iam::$ACCOUNT:user/$WANT_USER" ]; then
+      if [ -z "$ACCOUNT" ] || [ "${CALLER:-}" != "$ACCOUNT" ] || [ "${CALLER_ARN#arn:*:}" != "iam::$ACCOUNT:user/$WANT_USER" ]; then
         echo "WARNING: $ENC_FILE is for ${CALLER_ARN:-an unknown identity (lookup failed)}, not user $WANT_USER in account ${ACCOUNT:-(not configured)}; not activating it."
         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
         rm -f /tmp/credentials.json; continue

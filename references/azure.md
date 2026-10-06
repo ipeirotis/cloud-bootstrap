@@ -252,7 +252,9 @@ set -e
 APP_OBJECT_ID=""
 # Graph responses (one holds the plaintext secret) go to a private temp dir
 # outside the repo, removed on any exit, including an interruption
-RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
+RESP_DIR=$(mktemp -d) && [ -d "$RESP_DIR" ] \
+  || { echo "ERROR: could not create a private temp directory; nothing created."; exit 1; }
+trap 'rm -rf "$RESP_DIR"' EXIT
 cleanup_failed_setup() {
   # If the create call failed after Graph made the app (no ID came back),
   # find it by its unique per-run name
@@ -563,7 +565,9 @@ USER_EMAIL=$(git config user.email)
 
 # The addPassword response holds the plaintext secret: keep it in a private
 # temp dir outside the repo, removed on any exit, including an interruption
-RESP_DIR=$(mktemp -d); trap 'rm -rf "$RESP_DIR"' EXIT
+RESP_DIR=$(mktemp -d) && [ -d "$RESP_DIR" ] \
+  || { echo "ERROR: could not create a private temp directory; nothing created."; exit 1; }
+trap 'rm -rf "$RESP_DIR"' EXIT
 
 # Add a new client secret labeled with the user's email. An HTTP 4xx means
 # Graph rejected the request (no secret was created); a 5xx, a transport or
