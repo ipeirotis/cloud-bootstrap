@@ -10,6 +10,7 @@ Run this every time you need cloud access and are not yet authenticated. The Ses
 4. Get the current user's email:
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    ```
 5. Read the corresponding provider reference file in this skill's directory.
 6. Resolve the encryption key and determine the credential file name:

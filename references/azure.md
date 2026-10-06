@@ -234,6 +234,10 @@ grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-s
 # failed write (read-only file, full disk) would leave a live key committable
 git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
   || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
+# The git email names the credential file and the member's key_ids entry: an
+# empty one would leave a credential no later session can find
+[ -n "$(git config user.email)" ] \
+  || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry. Nothing created."; exit 1; }
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way
@@ -328,6 +332,10 @@ grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-s
 # failed write (read-only file, full disk) would leave a live key committable
 git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
   || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
+# The git email names the credential file and the member's key_ids entry: an
+# empty one would leave a credential no later session can find
+[ -n "$(git config user.email)" ] \
+  || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry. Nothing created."; exit 1; }
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way
@@ -736,6 +744,7 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '"existing secrets: \(.passwordCredentials | length)"'
 
 USER_EMAIL=$(git config user.email)
+[ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
 
 # The addPassword response holds the plaintext secret: keep it in a private
 # temp dir outside the repo, removed on any exit, including an interruption

@@ -59,16 +59,6 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then exit 0; fi
 # Hooks run in the session's current directory, which may be a subdirectory
 cd "${CLAUDE_PROJECT_DIR:-.}"
 
-# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
-# the activated service account in gcloud's credential order. Clear it for this
-# script and the whole session before any early exit, including a missing or
-# unreadable config, so gcloud fails instead of running as the ambient principal.
-unset CLOUDSDK_AUTH_ACCESS_TOKEN
-if [ -n "$CLAUDE_ENV_FILE" ]; then
-  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
-    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
-fi
-
 # Undo an earlier activation in this container (gcloud's stored account, the
 # ADC key file, the persisted export) whenever this run exits without renewing
 # it: a removed passphrase or a broken file must disable repository auth, not
@@ -94,6 +84,17 @@ clear_prior_gcp() {
 }
 trap '[ "${GCP_ACTIVATED:-}" = 1 ] || clear_prior_gcp' EXIT
 
+# Claude Code on the Web can preset CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks
+# the activated service account in gcloud's credential order. Clear it for this
+# script and the whole session before any early exit, including a missing or
+# unreadable config, so gcloud fails instead of running as the ambient principal.
+# (Set after the cleanup trap: a failed write here must still clear an
+# earlier activation)
+unset CLOUDSDK_AUTH_ACCESS_TOKEN
+if [ -n "$CLAUDE_ENV_FILE" ]; then
+  grep -qxF "unset CLOUDSDK_AUTH_ACCESS_TOKEN" "$CLAUDE_ENV_FILE" 2>/dev/null || \
+    echo "unset CLOUDSDK_AUTH_ACCESS_TOKEN" >> "$CLAUDE_ENV_FILE"
+fi
 
 # --- Auto-authenticate if credentials exist ---
 CONFIG=".cloud-config.json"
@@ -277,6 +278,10 @@ grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-s
 # failed write (read-only file, full disk) would leave a live key committable
 git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
   || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
+# The git email names the credential file and the member's key_ids entry: an
+# empty one would leave a credential no later session can find
+[ -n "$(git config user.email)" ] \
+  || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry. Nothing created."; exit 1; }
 # Record the account before creating it (not secret), so "Rollback a Failed
 # Setup" can find it from any shell if this run stops part-way
 jq -n --arg p "$PROJECT_ID" --arg s "$SA_ID@$PROJECT_ID.iam.gserviceaccount.com" \
@@ -620,6 +625,7 @@ A service-account key carries no member label, and its ID is otherwise stored on
 # Snippets may run in fresh shells: take KEY_ID from this shell, else from
 # credentials.json, else from the member's encrypted file (KEY from SKILL.md).
 USER_EMAIL=$(git config user.email)
+[ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
 if [ -z "$KEY_ID" ] && [ -f credentials.json ]; then
   KEY_ID=$(jq -r '.private_key_id // empty' credentials.json)
 fi

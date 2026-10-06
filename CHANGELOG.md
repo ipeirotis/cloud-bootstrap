@@ -150,6 +150,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP setup marks the setup record `ambiguous` when a failed create is followed by a chosen service-account ID turning up, and the rollback then requires `CONFIRM_SA=1`; if the mark cannot be written, the record is removed instead.
 - Azure Add Team Member uses the configured tenant and stops when a different `TENANT_ID` is set in the shell.
 - Every "Rollback a Failed Setup" (GCP, AWS, Azure REST and CLI) takes the identity from `.cloud-setup-pending.json` when it exists and stops if a value left in the shell disagrees; shell values are used only without a record.
+- The GCP SessionStart hook template installs its cleanup trap before its first write to `CLAUDE_ENV_FILE`, so a failed write still clears an earlier activation.
+- Setup and every workflow that reads `git config user.email` stop when it is empty, before anything is created provider-side, instead of producing `.cloud-credentials..enc` and an empty `key_ids` member.
 
 ## [1.4.0] - 2026-04-10
 

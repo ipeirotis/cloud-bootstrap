@@ -38,6 +38,7 @@ Using the bootstrap token and provider-specific commands:
 3. Encrypt with the user's email in the filename. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
      # PROVIDER must already be set from Step 1 — validate but do not overwrite
      if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then

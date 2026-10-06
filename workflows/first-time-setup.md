@@ -48,7 +48,7 @@ Tell them what permissions their personal account needs to create service accoun
 
 Using the bootstrap token and provider-specific commands from the reference file:
 
-1. **Resolve the encryption key first**, using the logic in SKILL.md, before anything is created on the provider side. If no key is set, stop here (SKILL.md, Example 3): otherwise setup would leave a live provider credential and a plaintext `credentials.json` that cannot be encrypted.
+1. **Resolve the encryption key first**, using the logic in SKILL.md, before anything is created on the provider side. If no key is set, stop here (SKILL.md, Example 3): otherwise setup would leave a live provider credential and a plaintext `credentials.json` that cannot be encrypted. Check `git config user.email` too: it names the credential file and the member's `key_ids` entry, so if it is empty, ask the user to set it before going on (the creation snippets also refuse to run without it).
 1a. **Ignore the plaintext files before anything is created**, so an interrupted run can never leave a committable `credentials.json`. Add to `.gitignore` now:
    ```
    # Cloud -- never commit plaintext credentials (written at the repo root
@@ -64,6 +64,7 @@ Using the bootstrap token and provider-specific commands from the reference file
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
    # Encrypt to a private temp file, prove it decrypts to the credential, and
    # only then move it into place in one rename, so a truncated file never

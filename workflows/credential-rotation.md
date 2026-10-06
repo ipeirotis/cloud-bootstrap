@@ -21,6 +21,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    - **Azure:** `keyId` of the decrypted current `ENC_FILE` (credentials created by this version carry it); for older files, list the app's secrets ("Secret Management") and take this member's current one.
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    # PROVIDER: the provider being rotated (required in multi-provider configs)
    PROVIDER="${PROVIDER:-$(jq -r '.provider // empty' .cloud-config.json)}"
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
@@ -101,6 +102,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      # shell), never from the key itself, or any stale or copied key would pass.
      # Same naming rule as references/aws.md ("IAM Names").
      USER_EMAIL=$(git config user.email)
+     [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
      acfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\")) else . end) | .$1 // empty" .cloud-config.json; }
      ACCOUNT=$(acfg project_id); PREFIX=$(acfg iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
      H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
@@ -153,6 +155,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 6. Re-encrypt with the user's passphrase. Use the multi-provider naming convention if the config has a `providers` array:
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    if jq -e '.providers' .cloud-config.json >/dev/null 2>&1; then
      # PROVIDER must already be set from step 1 (read from .cloud-config.json)
      if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "null" ]; then
@@ -196,6 +199,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 8. Record the swap in `.cloud-config.json`: move the old ID from `rotating` (step 3) to the member's `revoke_pending` list, which step 9 works through, and for GCP and Azure point `key_ids` at the new key or secret. The list keeps every earlier ID still awaiting deletion, so a second rotation never overwrites one. (In the compromise path step 9 has already revoked the old key and recorded that as `revoked_early`, so nothing is queued.)
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    # PROVIDER: the provider being rotated (required in multi-provider configs)
    PROVIDER="${PROVIDER:-$(jq -r '.provider // empty' .cloud-config.json)}"
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
@@ -248,6 +252,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
 9. **Now revoke the OLD key on the provider side** (only after the replacement is verified and committed). The snippet deletes every ID in the member's `revoke_pending` list (step 8 queued the old key there) and clears each record only once the provider confirms the key is gone (a key that no longer exists counts as gone). In the compromise path (step 9 run before step 4) set `COMPROMISE=1`, so the ID saved in step 3 (`rotating`, or for GCP and Azure the current `key_ids` entry) is revoked too, even from a fresh shell; never set it after step 8, when `key_ids` names the new key. It needs the bootstrap credentials: `TOKEN` (GCP), the AWS bootstrap keys, or `GRAPH_TOKEN` (Azure).
    ```bash
    USER_EMAIL=$(git config user.email)
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
    # PROVIDER: the provider being rotated (required in multi-provider configs)
    PROVIDER="${PROVIDER:-$(jq -r '.provider // empty' .cloud-config.json)}"
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }

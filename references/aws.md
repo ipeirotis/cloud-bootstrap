@@ -283,6 +283,7 @@ iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 charact
 }
 
 USER_EMAIL=$(git config user.email)
+[ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
 # Repo name plus a random suffix, so repos sharing a directory name in one
 # account get distinct names. Keep values already set (a rerun, or names the
 # user chose) and print them: later snippets of this setup need the same names
@@ -331,6 +332,10 @@ grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-s
 # failed write (read-only file, full disk) would leave a live key committable
 git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
   || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
+# The git email names the credential file and the member's key_ids entry: an
+# empty one would leave a credential no later session can find
+[ -n "$(git config user.email)" ] \
+  || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry. Nothing created."; exit 1; }
 pending() {   # written whole to a temp file, then renamed: never left half-written
   jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
     '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
@@ -532,6 +537,7 @@ iam_user_name() {   # $1 = email, $2 = user prefix; result is at most 64 charact
 }
 
 USER_EMAIL=$(git config user.email)
+[ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
 # The group and user prefix this repo recorded at setup (provider-aware), not
 # hard-coded names, or the new user won't inherit the repo's permissions.
 GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
@@ -567,6 +573,10 @@ grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-s
 # failed write (read-only file, full disk) would leave a live key committable
 git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
   || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
+# The git email names the credential file and the member's key_ids entry: an
+# empty one would leave a credential no later session can find
+[ -n "$(git config user.email)" ] \
+  || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry. Nothing created."; exit 1; }
 # The name must be free first: a user that already exists belongs to someone
 # else (another member whose email maps to the same name, or an earlier
 # setup), and recording it would let a later rollback delete it
