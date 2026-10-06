@@ -443,8 +443,16 @@ ROLE="roles/ROLE_NAME"
 # Bind to the account setup actually created (SA_EMAIL from Create Service
 # Account), or in a later session the one recorded in config; never a
 # hard-coded name, which could be a different, pre-existing account.
-SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
-[ -n "$SA_EMAIL" ] || { echo "ERROR: SA_EMAIL is not set; run Create Service Account first."; exit 1; }
+# The setup record names it during first-time setup, the config afterwards; an
+# SA_EMAIL left in the shell by another operation that disagrees is refused
+WANT_SA=$(jq -r 'select(.provider=="gcp") | .service_account // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_SA="${WANT_SA:-$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .service_account) else (select(.provider=="gcp") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+if [ -n "$WANT_SA" ]; then
+  [ -z "${SA_EMAIL:-}" ] || [ "$SA_EMAIL" = "$WANT_SA" ] \
+    || { echo "ERROR: SA_EMAIL is $SA_EMAIL, but this repo's service account is $WANT_SA; no role granted. Unset SA_EMAIL."; exit 1; }
+  SA_EMAIL="$WANT_SA"
+fi
+[ -n "${SA_EMAIL:-}" ] || { echo "ERROR: SA_EMAIL is not set; run Create Service Account first."; exit 1; }
 # The project whose policy changes: the configured one (or during setup the
 # one in its record); a stale PROJECT_ID that disagrees with it is refused
 CFG_PROJECT=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") | .project_id) else (select(.provider=="gcp") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)

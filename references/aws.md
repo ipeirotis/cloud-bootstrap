@@ -679,8 +679,15 @@ fi
 # Change nothing unless these credentials are in this repo's account (from the
 # config, or during setup from its record): group names are only unique per
 # account, and the policy commands take no account
-AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws_cfg project_id)}"
-AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(jq -r 'select(.provider=="aws") | .account // empty' .cloud-setup-pending.json 2>/dev/null)}"
+# The recorded account wins over an AWS_ACCOUNT_ID left in the shell: the
+# policy commands take a bare group name and no account
+WANT_ACCOUNT=$(jq -r 'select(.provider=="aws") | .account // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_ACCOUNT="${WANT_ACCOUNT:-$(aws_cfg project_id)}"
+if [ -n "$WANT_ACCOUNT" ]; then
+  [ -z "${AWS_ACCOUNT_ID:-}" ] || [ "$AWS_ACCOUNT_ID" = "$WANT_ACCOUNT" ] \
+    || { echo "ERROR: AWS_ACCOUNT_ID is $AWS_ACCOUNT_ID, but this repo's account is $WANT_ACCOUNT; nothing changed. Unset AWS_ACCOUNT_ID."; exit 1; }
+  AWS_ACCOUNT_ID="$WANT_ACCOUNT"
+fi
 CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
   || { echo "ERROR: could not identify the bootstrap credentials' account; nothing changed."; exit 1; }
 [ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
@@ -895,7 +902,7 @@ git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-
 # deleted, and placeholders naming this user. An entry recorded for another
 # account or an unconfirmed owner stays: it may still be live elsewhere.
 jq --arg e "$MEMBER_EMAIL" --arg u "$IAM_USER" --arg ks "$DELETED_KEYS" '
-  def clr: del(.revoke_pending[$e]) | del(.rotating[$e]) | del(.revoked_early[$e]);
+  def clr: del(.revoke_pending[$e]) | del(.rotating[$e]) | del(.revoked_early[$e]) | del(.rotated[$e]);
   ($ks | split(" ") | map(select(. != ""))) as $gone
   | .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws"
       or ((.id | IN($gone[])) | not)

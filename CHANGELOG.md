@@ -152,6 +152,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Every "Rollback a Failed Setup" (GCP, AWS, Azure REST and CLI) takes the identity from `.cloud-setup-pending.json` when it exists and stops if a value left in the shell disagrees; shell values are used only without a record.
 - The GCP SessionStart hook template installs its cleanup trap before its first write to `CLAUDE_ENV_FILE`, so a failed write still clears an earlier activation.
 - Setup and every workflow that reads `git config user.email` stop when it is empty, before anything is created provider-side, instead of producing `.cloud-credentials..enc` and an empty `key_ids` member.
+- GCP and AWS role grants take the service account and account from the setup record or config, and stop when an `SA_EMAIL` or `AWS_ACCOUNT_ID` left in the shell disagrees.
+- An AWS compromise rotation's step 8 records `rotated[<email>]`, so a rerun recognizes the completed swap instead of stopping with "no old key ID known"; the next rotation and member removal clear it.
 
 ## [1.4.0] - 2026-04-10
 

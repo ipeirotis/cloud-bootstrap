@@ -37,7 +37,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      exit 1
    fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
-     def s: .rotating[$e] = $old;
+     def s: .rotating[$e] = $old | del(.rotated[$e]);
      if .providers then .providers |= map(if .provider == $p then s else . end) else s end' \
      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
    ```
@@ -225,7 +225,8 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    # gone and the old ID is queued (or, GCP/Azure, key_ids names the new key)
    if [ -z "${OLD_KEY_ID:-}" ] && [ -z "$(pcfg '.rotating[$e]')" ] && [ -z "$(pcfg '.revoked_early[$e]')" ] \
       && { [ -n "$(pcfg '(.revoke_pending[$e] // []) | if type == "string" then . else .[] end')" ] \
-           || { [ "$PROVIDER" != aws ] && [ "$(pcfg '.key_ids[$e]')" = "$NEW_KEY_ID" ]; }; }; then
+           || { [ "$PROVIDER" != aws ] && [ "$(pcfg '.key_ids[$e]')" = "$NEW_KEY_ID" ]; } \
+           || { [ "$PROVIDER" = aws ] && [ "$(pcfg '.rotated[$e]')" = "$NEW_KEY_ID" ]; }; }; then
      echo "The swap is already recorded; commit $ENC_FILE and .cloud-config.json, then delete credentials.json and continue with step 9."
      exit 0
    fi
@@ -241,7 +242,10 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      exit 1
    fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg new "${NEW_KEY_ID:-}" --arg old "${OLD_KEY_ID:-}" '
+     # AWS keeps no key_ids: after a compromise rotation (nothing queued) only
+     # "rotated" shows that this step already ran, for a rerun to recognize
      def upd: (if $p != "aws" and $new != "" then .key_ids[$e] = $new else . end)
+       | (if $p == "aws" and $old == "" and $new != "" then .rotated[$e] = $new else del(.rotated[$e]) end)
        | del(.rotating[$e]) | del(.revoked_early[$e])
        | if $old != "" then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [$old] | unique) else . end;
      if .providers then .providers |= map(if .provider == $p then upd else . end) else upd end' \
