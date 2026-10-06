@@ -36,6 +36,29 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
      echo "If its replacement was encrypted and committed (step 6), resume at step 8. Otherwise revoke any unused new key (scripts/discard-credential.sh) and continue from step 4; rotating[$USER_EMAIL] still names the old key."
      exit 1
    fi
+   # The ID must be this member's current credential: steps 8-9 revoke it from
+   # the shared account or application, so a stale, mistyped or teammate's ID
+   # would cut off someone else. (IDs compare by their last path segment.)
+   OTHER=$(jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg k "${OLD_KEY_ID##*/}" '
+     (if .providers then (.providers[] | select(.provider == $p)) else . end)
+     | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)
+     | select([.value | if type == "array" then .[] else . end | split("/") | last] | index($k)) | .key' \
+     .cloud-config.json | head -1)
+   [ -z "$OTHER" ] || { echo "ERROR: $OLD_KEY_ID is recorded for $OTHER, not $USER_EMAIL; nothing changed."; exit 1; }
+   CUR=$(pcfg '.key_ids[$e]')
+   if [ -n "$EXISTING" ]; then
+     :   # resuming the interrupted rotation that saved this same ID
+   elif [ "$PROVIDER" = aws ]; then
+     :   # AWS keys belong to the member's own IAM user; step 9 checks the owner
+   elif [ -n "$CUR" ]; then
+     [ "${CUR##*/}" = "${OLD_KEY_ID##*/}" ] \
+       || { echo "ERROR: $OLD_KEY_ID is not $USER_EMAIL's recorded key (${CUR##*/}); nothing changed."; exit 1; }
+   elif [ "${CONFIRM_KEY:-}" != 1 ]; then
+     # Credentials from before key_ids existed: a person confirms the ID
+     echo "ERROR: no key_ids entry records $USER_EMAIL's current key, so $OLD_KEY_ID cannot be checked."
+     echo "Confirm it is the key in your decrypted credential file (Azure: the secret labelled claude-code-$USER_EMAIL), then re-run with CONFIRM_KEY=1. Nothing changed."
+     exit 1
+   fi
    jq --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg old "$OLD_KEY_ID" '
      def s: .rotating[$e] = $old | del(.rotated[$e]);
      if .providers then .providers |= map(if .provider == $p then s else . end) else s end' \
