@@ -24,9 +24,21 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$SRC/MANIFEST" -o "$TMP/MANIFEST"
 FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$TMP/MANIFEST")
+# A manifest that names a path outside the skill, or leaves out the files every
+# release needs, is refused before anything is downloaded or replaced
+for FILE in $FILES; do
+  case "$FILE" in /*|*..*) echo "ERROR: MANIFEST lists an unsafe path ($FILE); nothing changed." >&2; exit 1 ;; esac
+done
+for REQ in VERSION SKILL.md; do
+  printf '%s\n' $FILES | grep -qxF "$REQ" \
+    || { echo "ERROR: MANIFEST does not list $REQ; nothing changed." >&2; exit 1; }
+done
 for FILE in $FILES; do
   mkdir -p "$TMP/files/$(dirname "$FILE")"
   curl -fsSL "$SRC/$FILE" -o "$TMP/files/$FILE"
+done
+for REQ in VERSION SKILL.md; do
+  [ -s "$TMP/files/$REQ" ] || { echo "ERROR: $REQ downloaded empty; nothing changed." >&2; exit 1; }
 done
 
 # Record which files this release installed, so update.sh can remove the ones

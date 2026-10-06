@@ -154,6 +154,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Setup and every workflow that reads `git config user.email` stop when it is empty, before anything is created provider-side, instead of producing `.cloud-credentials..enc` and an empty `key_ids` member.
 - GCP and AWS role grants take the service account and account from the setup record or config, and stop when an `SA_EMAIL` or `AWS_ACCOUNT_ID` left in the shell disagrees.
 - An AWS compromise rotation's step 8 records `rotated[<email>]`, so a rerun recognizes the completed swap instead of stopping with "no old key ID known"; the next rotation and member removal clear it.
+- `install.sh` and `update.sh` refuse a MANIFEST that lists an absolute or `..` path, or omits `VERSION` or `SKILL.md`, and check those two arrived non-empty, before replacing the installed skill.
+- GCP and Azure member removal keep the credential file when clearing an early-revoked member's state in `.cloud-config.json` fails.
+- Azure secret creation (first-time REST and Add Team Member) builds the request body with `jq`, so an email with JSON-significant characters is encoded correctly.
 
 ## [1.4.0] - 2026-04-10
 

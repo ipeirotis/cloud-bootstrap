@@ -368,7 +368,7 @@ jq --arg p "$SP_OBJECT_ID" '. + {sp_object_id: $p}' .cloud-setup-pending.json \
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-$(git config user.email)\"}}" > "$RESP_DIR/secret.json")
+  -d "$(jq -cn --arg n "claude-code-$(git config user.email)" '{passwordCredential: {displayName: $n}}')" > "$RESP_DIR/secret.json")
 SECRET=$(jq -r '.secretText // empty' "$RESP_DIR/secret.json")
 SECRET_KEY_ID=$(jq -r '.keyId // empty' "$RESP_DIR/secret.json")
 [ -n "$SECRET" ] && [ -n "$SECRET_KEY_ID" ] || { echo "ERROR: addPassword response lacks secretText or keyId."; false; }
@@ -810,7 +810,7 @@ if HTTP=$(umask 077 && curl -sS -o "$RESP_DIR/secret.json" -w '%{http_code}' -X 
   "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID/addPassword" \
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"passwordCredential\": {\"displayName\": \"claude-code-${USER_EMAIL}\"}}"); then RC=0; else RC=$?; fi
+  -d "$(jq -cn --arg n "claude-code-$USER_EMAIL" '{passwordCredential: {displayName: $n}}')"); then RC=0; else RC=$?; fi
 case "$RC:$HTTP" in
   0:2??) ;;
   0:4??) trap - INT TERM HUP; echo "ERROR: Graph rejected addPassword (HTTP $HTTP); no secret was created."; exit 1 ;;
@@ -913,7 +913,8 @@ if [ -z "$IDS" ]; then
   if [ -n "$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end) | .revoked_early[$e] // empty' .cloud-config.json)" ]; then
     jq --arg e "$MEMBER_EMAIL" 'def clr: del(.revoked_early[$e]) | del(.key_ids[$e]) | del(.rotating[$e]) | del(.revoke_pending[$e]);
       if .providers then .providers |= map(if .provider == "azure" then clr else . end) else clr end' \
-      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Fix it and retry."; exit 1; }
     git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
     echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
   fi

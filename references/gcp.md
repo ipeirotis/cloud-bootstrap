@@ -718,7 +718,8 @@ if [ -z "$IDS" ]; then
   if [ -n "$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .revoked_early[$e] // empty' .cloud-config.json)" ]; then
     jq --arg e "$MEMBER_EMAIL" 'def clr: del(.revoked_early[$e]) | del(.key_ids[$e]) | del(.rotating[$e]) | del(.revoke_pending[$e]);
       if .providers then .providers |= map(if .provider == "gcp" then clr else . end) else clr end' \
-      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Fix it and retry."; exit 1; }
     git rm -q --ignore-unmatch ".cloud-credentials.gcp.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
     echo "$MEMBER_EMAIL has no live credential left; local state cleared."; exit 0
   fi
