@@ -84,13 +84,17 @@ cd "${CLAUDE_PROJECT_DIR:-.}"
 # earlier activation in this container (stored account, ADC key, export), so a
 # removed passphrase or broken file disables repository auth
 clear_prior_gcp() {
-  local G K=/tmp/gcp-adc-credentials.json
-  if [ -f "$K" ]; then
-    for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
-      command -v "$G" >/dev/null 2>&1 && { "$G" auth revoke "$(jq -r .client_email "$K" 2>/dev/null)" >/dev/null 2>&1 || true; break; }
+  local G A K=/tmp/gcp-adc-credentials.json
+  for G in gcloud /home/user/google-cloud-sdk/bin/gcloud; do
+    command -v "$G" >/dev/null 2>&1 || continue
+    # The earlier account (named by the ADC copy) and one this run activated
+    # before failing (GCP_NEW_SA: its ADC copy may never have been written)
+    for A in "$(jq -r '.client_email // empty' "$K" 2>/dev/null)" "${GCP_NEW_SA:-}"; do
+      [ -z "$A" ] || "$G" auth revoke "$A" >/dev/null 2>&1 || true
     done
-    rm -f "$K"
-  fi
+    break
+  done
+  rm -f "$K" "$K.tmp"
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
     sed -i '/GOOGLE_APPLICATION_CREDENTIALS/d' "$CLAUDE_ENV_FILE"
     echo "unset GOOGLE_APPLICATION_CREDENTIALS" >> "$CLAUDE_ENV_FILE"
@@ -212,6 +216,7 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "WARNING: $ENC_FILE is not a key for ${SA_CFG:-the configured service account}; skipping GCP."
         rm -f /tmp/credentials.json; continue
       fi
+      GCP_NEW_SA="$SA_CFG"   # from here on, a failure revokes it (clear_prior_gcp)
       if ! gcloud auth activate-service-account --key-file=/tmp/credentials.json 2>/dev/null; then
         echo "WARNING: gcloud auth failed — skipping GCP."
         rm -f /tmp/credentials.json; continue
@@ -237,7 +242,8 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       if [ -n "$PRIOR_SA" ] && [ "$PRIOR_SA" != "$SA_CFG" ]; then
         gcloud auth revoke "$PRIOR_SA" >/dev/null 2>&1 || true
       fi
-      (umask 077 && cp /tmp/credentials.json "$GCP_ADC_KEY")
+      # Through a temp file and a rename: never a truncated key file
+      (umask 077 && cp /tmp/credentials.json "$GCP_ADC_KEY.tmp") && mv -f "$GCP_ADC_KEY.tmp" "$GCP_ADC_KEY"
       export GOOGLE_APPLICATION_CREDENTIALS="$GCP_ADC_KEY"
       if [ -n "$CLAUDE_ENV_FILE" ]; then
         GCLOUD_BIN="$(dirname "$(command -v gcloud)")"

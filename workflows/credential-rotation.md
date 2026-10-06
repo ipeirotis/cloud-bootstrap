@@ -94,8 +94,22 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    - **AWS** (new keys can take a few seconds to propagate, so retry with backoff; on final failure delete the new key, or the next attempt hits the two-key limit):
      ```bash
      NEW_KEY_ID=$(jq -r .access_key_id credentials.json)
-     # The key's owner, from AWS itself (works in a fresh shell); it must be
-     # this member's user when IAM_USER is known from step 3. Both lookups are
+     # The replacement must belong to this member's user in this repo's
+     # account: derive both from the config and the email (works in a fresh
+     # shell), never from the key itself, or any stale or copied key would pass.
+     # Same naming rule as references/aws.md ("IAM Names").
+     USER_EMAIL=$(git config user.email)
+     acfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\")) else . end) | .$1 // empty" .cloud-config.json; }
+     ACCOUNT=$(acfg project_id); PREFIX=$(acfg iam_user_prefix); PREFIX="${PREFIX:-claude-agent}"
+     H=$(printf '%s' "$USER_EMAIL" | sha256sum | cut -c1-8)
+     if [ "$PREFIX" = "claude-agent" ]; then
+       WANT_USER="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,_-]/-/g')"
+     else
+       WANT_USER="$PREFIX-$(printf '%s' "$USER_EMAIL" | sed 's/[^A-Za-z0-9+=,.@_-]/-/g')"
+       [ "$WANT_USER" = "$PREFIX-$USER_EMAIL" ] || WANT_USER="${WANT_USER:0:55}-$H"
+     fi
+     [ ${#WANT_USER} -le 64 ] || WANT_USER="${WANT_USER:0:55}-$H"
+     # The key's owner and the caller ARN, from AWS itself. Both lookups are
      # retried: either can fail transiently while the new key propagates
      KEY_OWNER=""; ARN=""
      for delay in 0 5 10 20 40; do
@@ -108,8 +122,7 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
          aws sts get-caller-identity --query Arn --output text 2>/dev/null) || ARN=""
        [ -n "$KEY_OWNER" ] && [ -n "$ARN" ] && break
      done
-     IAM_USER="${IAM_USER:-$KEY_OWNER}"
-     if [ -n "$ARN" ] && [ "${ARN##*/}" = "$IAM_USER" ] && [ "$KEY_OWNER" = "$IAM_USER" ]; then
+     if [ -n "$ACCOUNT" ] && [ "${ARN#arn:*:}" = "iam::$ACCOUNT:user/$WANT_USER" ] && [ "$KEY_OWNER" = "$WANT_USER" ]; then
        echo "$ARN"
      else
        TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \

@@ -220,9 +220,18 @@ jq -n --arg n "$SP_NAME" --arg s "$SUBSCRIPTION_ID" '{provider: "azure", sp_name
 # Creating without a role assignment is the default (--skip-assignment is obsolete).
 # The output holds the new client secret: write it private (0600) from the start.
 (umask 077 && az ad sp create-for-rbac --name "$SP_NAME" > credentials.json)
+# Record the new identity's IDs (not secret) as soon as they are known, so a
+# rollback from a fresh shell finds them; if this fails, it finds the
+# application by the recorded name instead
+APP_ID=$(jq -r '.appId // empty' credentials.json 2>/dev/null)
+SP_OBJECT_ID=""; [ -z "$APP_ID" ] || SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv 2>/dev/null)
+jq --arg a "$APP_ID" --arg p "$SP_OBJECT_ID" \
+  '. + (if $a != "" then {app_id: $a} else {} end) + (if $p != "" then {sp_object_id: $p} else {} end)' \
+  .cloud-setup-pending.json > .cloud-setup-pending.json.tmp && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+[ -n "$APP_ID" ] || { echo "ERROR: create-for-rbac returned no appId; run Rollback a Failed Setup (it finds the app by name)."; exit 1; }
 # Add the secret's keyId (not secret; the new app has exactly one secret), so a
 # later rotation can find and revoke exactly this secret
-KEY_ID=$(az ad app credential list --id "$(jq -r .appId credentials.json)" --query '[0].keyId' -o tsv)
+KEY_ID=$(az ad app credential list --id "$APP_ID" --query '[0].keyId' -o tsv)
 [ -n "$KEY_ID" ] || { echo "ERROR: could not read the new secret's keyId; run Rollback a Failed Setup."; exit 1; }
 # The rewrite goes through a private temp file outside the repository (the
 # only plaintext in the repo stays credentials.json, which is ignored and is
@@ -313,7 +322,12 @@ jq --arg a "$APP_ID" --arg o "$APP_OBJECT_ID" '. + {app_id: $a, app_object_id: $
   -H "Authorization: Bearer $GRAPH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"appId\": \"$APP_ID\"}" > "$RESP_DIR/sp.json")
-[ -n "$(jq -r '.id // empty' "$RESP_DIR/sp.json")" ] || { echo "ERROR: service principal response lacks id."; false; }
+SP_OBJECT_ID=$(jq -r '.id // empty' "$RESP_DIR/sp.json")
+[ -n "$SP_OBJECT_ID" ] || { echo "ERROR: service principal response lacks id."; false; }
+# Role assignments outlive their principal: record its object ID, so a
+# rollback can remove them even after the principal itself is gone
+jq --arg p "$SP_OBJECT_ID" '. + {sp_object_id: $p}' .cloud-setup-pending.json \
+  > .cloud-setup-pending.json.tmp && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
 
 # Step 3: Add client secret
 (umask 077 && curl -sS --fail -X POST "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID/addPassword" \
@@ -376,38 +390,43 @@ if [ -n "$APP_OBJECT_ID" ]; then
     *) echo "ERROR: could not look the application up (HTTP $HTTP); nothing deleted. Retry."; exit 1 ;;
   esac
 fi
-RB_OK=1
+RB_OK=1; RA_OK=1
+# Role assignments are not removed with the service principal (they linger as
+# "Identity not found" and count against the subscription's quota): delete
+# the ones setup granted, by the principal's object ID, which still names them
+# after the principal is gone. Needs ARM_TOKEN and SUBSCRIPTION_ID.
+remove_role_assignments() {   # uses SP_OBJECT_ID; clears RA_OK on any failure
+  if [ -z "${ARM_TOKEN:-}" ] || [ -z "${SUBSCRIPTION_ID:-}" ]; then
+    RA_OK=0; echo "ERROR: set ARM_TOKEN and SUBSCRIPTION_ID so the role assignments can be removed."
+  elif R=$(curl -sS --fail -G "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments" \
+          --data-urlencode "api-version=2022-04-01" \
+          --data-urlencode "\$filter=principalId eq '$SP_OBJECT_ID'" \
+          -H "Authorization: Bearer $ARM_TOKEN"); then
+    for RA in $(printf '%s' "$R" | jq -r '.value[].id'); do
+      curl -sS --fail -X DELETE "https://management.azure.com${RA}?api-version=2022-04-01" \
+        -H "Authorization: Bearer $ARM_TOKEN" >/dev/null || RA_OK=0
+    done
+  else
+    RA_OK=0
+  fi
+}
 if [ -n "$APP_OBJECT_ID" ]; then
-  # Role assignments are not removed with the service principal (they linger as
-  # "Identity not found" and count against the subscription's quota): delete
-  # the ones setup granted first. Needs ARM_TOKEN and SUBSCRIPTION_ID.
   # Each lookup must succeed: an empty answer from a failed call would skip the
   # role assignments and then delete the application they belong to
-  RA_OK=1; SP_OBJECT_ID=""
+  SP_OBJECT_ID=""
   if R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
          -H "Authorization: Bearer $GRAPH_TOKEN") \
      && APP_ID=$(printf '%s' "$R" | jq -r '.appId // empty') && [ -n "$APP_ID" ] \
      && R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
          --data-urlencode "\$filter=appId eq '$APP_ID'" -H "Authorization: Bearer $GRAPH_TOKEN"); then
-    SP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')   # empty: no service principal was created
+    SP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')
   else
     RA_OK=0; echo "ERROR: could not look up the application or its service principal."
   fi
-  if [ -n "$SP_OBJECT_ID" ]; then
-    if [ -z "${ARM_TOKEN:-}" ] || [ -z "${SUBSCRIPTION_ID:-}" ]; then
-      RA_OK=0; echo "ERROR: set ARM_TOKEN and SUBSCRIPTION_ID so the role assignments can be removed."
-    elif R=$(curl -sS --fail -G "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/providers/Microsoft.Authorization/roleAssignments" \
-            --data-urlencode "api-version=2022-04-01" \
-            --data-urlencode "\$filter=principalId eq '$SP_OBJECT_ID'" \
-            -H "Authorization: Bearer $ARM_TOKEN"); then
-      for RA in $(printf '%s' "$R" | jq -r '.value[].id'); do
-        curl -sS --fail -X DELETE "https://management.azure.com${RA}?api-version=2022-04-01" \
-          -H "Authorization: Bearer $ARM_TOKEN" >/dev/null || RA_OK=0
-      done
-    else
-      RA_OK=0
-    fi
-  fi
+  # No principal found (never created, or deleted since): the recorded ID
+  # still names its role assignments
+  SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
+  [ "$RA_OK" = 0 ] || [ -z "$SP_OBJECT_ID" ] || remove_role_assignments
   if [ "$RA_OK" = 1 ]; then
     HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
       -H "Authorization: Bearer $GRAPH_TOKEN")
@@ -422,6 +441,12 @@ if [ -n "$APP_OBJECT_ID" ]; then
   fi
 else
   echo "No application found: nothing was created, or it is already deleted."
+  # Its principal's role assignments can outlive it
+  SP_OBJECT_ID="$(pend sp_object_id)"
+  if [ -n "$SP_OBJECT_ID" ]; then
+    remove_role_assignments
+    [ "$RA_OK" = 1 ] || { RB_OK=0; echo "WARNING: role assignments of the deleted principal $SP_OBJECT_ID remain."; }
+  fi
 fi
 if [ "$RB_OK" = 1 ]; then
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
@@ -433,28 +458,44 @@ fi
 With the CLI path (an `az` signed in with the bootstrap account), the same rollback is:
 
 ```bash
-# Names from the setup record (works from a fresh shell), else from credentials.json
+# Names from the setup record (works from a fresh shell), else credentials.json
 pend() { jq -r --arg k "$1" 'select(.provider == "azure") | .[$k] // empty' .cloud-setup-pending.json 2>/dev/null; }
 SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
+SP_NAME="${SP_NAME:-$(pend sp_name)}"; SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
 APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
-[ -n "$SUBSCRIPTION_ID" ] && [ -n "$APP_ID" ] \
-  || { echo "ERROR: set SUBSCRIPTION_ID and APP_ID from the failed setup's output."; exit 1; }
-if ! OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
-  # Already deleted (an earlier attempt): nothing left to remove here
-  printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound' \
-    || { echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1; }
-  echo "Application $APP_ID no longer exists."
-else
-  # Role assignments are not removed with the application: delete every one in
-  # the setup's subscription (not the CLI's current default), at any scope,
-  # and keep the application unless none remain
-  IDS=$(az role assignment list --assignee "$APP_ID" --subscription "$SUBSCRIPTION_ID" --all --query '[].id' -o tsv) \
-    || { echo "ERROR: could not list role assignments of $APP_ID; nothing deleted."; exit 1; }
+[ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID (no Azure entry in .cloud-setup-pending.json)."; exit 1; }
+# Interrupted before the IDs were saved: find the application by its
+# per-run name, which the collision check proved unique
+if [ -z "$APP_ID" ] && [ -n "$SP_NAME" ]; then
+  APP_ID=$(az ad app list --display-name "$SP_NAME" --query '[0].appId' -o tsv) \
+    || { echo "ERROR: could not look up application $SP_NAME; nothing deleted."; exit 1; }
+fi
+[ -n "$APP_ID" ] || [ -n "$SP_OBJECT_ID" ] \
+  || { echo "No application named ${SP_NAME:-(unknown)} exists: nothing was created."; rm -f .cloud-setup-pending.json; rm -f credentials.json; exit 0; }
+if [ -z "$SP_OBJECT_ID" ] && [ -n "$APP_ID" ]; then
+  SP_OBJECT_ID=$(az ad sp list --filter "appId eq '$APP_ID'" --query '[0].id' -o tsv) \
+    || { echo "ERROR: could not look up the service principal of $APP_ID; nothing deleted."; exit 1; }
+fi
+# Role assignments are not removed with the application or its principal:
+# delete every one of this principal in the setup's subscription (any scope),
+# by object ID, which still names them after the principal is gone
+if [ -n "$SP_OBJECT_ID" ]; then
+  IDS=$(az role assignment list --subscription "$SUBSCRIPTION_ID" --all \
+          --query "[?principalId=='$SP_OBJECT_ID'].id" -o tsv) \
+    || { echo "ERROR: could not list role assignments; nothing deleted."; exit 1; }
   [ -z "$IDS" ] || az role assignment delete --ids $IDS --subscription "$SUBSCRIPTION_ID" \
-    || { echo "ERROR: could not delete all role assignments of $APP_ID; the application is kept. Re-run this block."; exit 1; }
-  LEFT=$(az role assignment list --assignee "$APP_ID" --subscription "$SUBSCRIPTION_ID" --all --query 'length(@)' -o tsv)
-  [ "$LEFT" = 0 ] || { echo "ERROR: role assignments of $APP_ID remain; the application is kept. Re-run this block."; exit 1; }
-  az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
+    || { echo "ERROR: could not delete all role assignments; the application is kept. Re-run this block."; exit 1; }
+  LEFT=$(az role assignment list --subscription "$SUBSCRIPTION_ID" --all \
+           --query "length([?principalId=='$SP_OBJECT_ID'])" -o tsv)
+  [ "$LEFT" = 0 ] || { echo "ERROR: role assignments of $SP_OBJECT_ID remain; the application is kept. Re-run this block."; exit 1; }
+fi
+# Only then delete the application (already gone counts as done)
+if [ -n "$APP_ID" ]; then
+  if OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
+    az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
+  elif ! printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound'; then
+    echo "ERROR: could not look up application $APP_ID: $OUT"; exit 1
+  fi
 fi
 rm -f .cloud-setup-pending.json
 rm -f credentials.json
