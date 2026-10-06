@@ -77,7 +77,8 @@ Using the bootstrap token and provider-specific commands from the reference file
           && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
             | cmp -s - credentials.json \
           && mv -f "$TMP_ENC" "$ENC_FILE"; }; then
-     rm -f "$TMP_ENC" "$ENC_FILE" credentials.json
+     # Any earlier $ENC_FILE was never touched (only the rename replaces it): keep it
+     rm -f "$TMP_ENC" credentials.json
      echo "ERROR: encryption failed. Run the provider's setup rollback now (step 2), then retry setup."
      exit 1
    fi

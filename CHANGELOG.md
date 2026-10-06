@@ -130,6 +130,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Uninstall removes the `.gitignore` rules setup actually adds (`/credentials.json`, `/credentials_clean.json`), plus the pre-1.5 forms.
 - Setup's `.gitignore` entries are anchored to the repo root (`/credentials.json`, `/credentials_clean.json`); the repo-relative `/tmp/` entry, which never covered the system `/tmp`, is gone.
 - AWS: when the pending record cannot be marked as unconfirmed after a lost `create-group` (chosen name) or member `create-user` response, setup removes the record instead of leaving one a rollback would act on, and tells the user to resolve the group or user by hand. AWS member removal stops if it cannot clear a deleted key's `unrevoked` entry, since a retry no longer sees that key.
+- Azure CLI rollback selects and verifies the setup's recorded subscription before looking anything up, so a CLI signed in to another tenant cannot make it report "nothing was created" and delete the record while the application stays live.
+- A failed encryption in first-time setup removes only its temp file and the plaintext, never an existing `.enc` file of the same name, which the staged write leaves untouched until the final rename.
 
 ## [1.4.0] - 2026-04-10
 

@@ -475,6 +475,12 @@ SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(pend subscription)}"
 SP_NAME="${SP_NAME:-$(pend sp_name)}"; SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
 APP_ID="${APP_ID:-$(pend app_id)}"; APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID (no Azure entry in .cloud-setup-pending.json)."; exit 1; }
+# Search the setup's subscription (and so its tenant), not whatever the CLI has
+# selected: in another tenant the lookups below come back empty, and the
+# rollback would wrongly conclude nothing was created
+az account set --subscription "$SUBSCRIPTION_ID" \
+  && [ "$(az account show --query id -o tsv)" = "$SUBSCRIPTION_ID" ] \
+  || { echo "ERROR: could not select subscription $SUBSCRIPTION_ID; nothing deleted."; exit 1; }
 # Interrupted before the IDs were saved: find the application by its
 # per-run name, which the collision check proved unique
 # (Entra can show a just-created application as missing for a few minutes:
