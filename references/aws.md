@@ -535,6 +535,16 @@ elif OUT=$(aws iam list-attached-group-policies --group-name "$GROUP_NAME" --que
   aws iam delete-group --group-name "$GROUP_NAME" || RB_OK=0
 elif ! gone "$OUT"; then
   RB_OK=0; echo "WARNING: could not inspect group $GROUP_NAME: $OUT"
+else
+  # As for the user: a group created moments ago can read as missing until
+  # IAM propagates, so count it gone only if the absence holds
+  for D in 20 20 20; do
+    sleep "$D"
+    if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! gone "$OUT"; then
+      RB_OK=0; echo "WARNING: group $GROUP_NAME is not confirmed gone (IAM may still be propagating); re-run this rollback."
+      break
+    fi
+  done
 fi
 if [ "$RB_OK" = 1 ]; then
   # Drop the "unrevoked" entries this rollback resolved (a failed discard may
