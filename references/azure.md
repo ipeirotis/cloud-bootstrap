@@ -476,6 +476,19 @@ if [ -n "$APP_OBJECT_ID" ]; then
      && R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
          --data-urlencode "\$filter=appId eq '$APP_ID'" -H "Authorization: Bearer $GRAPH_TOKEN"); then
     SP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')
+    # Entra replicates a new principal with a delay, so an empty answer may come
+    # from a lagging replica: the absence must hold for about a minute before
+    # the role-assignment cleanup is skipped and the application deleted
+    if [ -z "$SP_OBJECT_ID" ]; then
+      for D in 20 20 20; do
+        sleep "$D"
+        R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
+              --data-urlencode "\$filter=appId eq '$APP_ID'" -H "Authorization: Bearer $GRAPH_TOKEN") \
+          || { RA_OK=0; echo "ERROR: could not look up the service principal."; break; }
+        SP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty')
+        [ -z "$SP_OBJECT_ID" ] || break
+      done
+    fi
   else
     RA_OK=0; echo "ERROR: could not look up the application or its service principal."
   fi

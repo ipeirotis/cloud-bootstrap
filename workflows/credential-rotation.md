@@ -27,6 +27,9 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    [ -n "$PROVIDER" ] || { echo "ERROR: set PROVIDER to the provider being rotated."; exit 1; }
    pcfg() { jq -r --arg p "$PROVIDER" --arg e "$USER_EMAIL" "(if .providers then (.providers[] | select(.provider == \$p)) else . end) | $1 // empty" .cloud-config.json; }
    [ -n "$OLD_KEY_ID" ] || { echo "ERROR: set OLD_KEY_ID to the key being replaced."; exit 1; }
+   # A GCP key listing gives full resource names (projects/.../keys/<id>):
+   # keep the bare ID, which step 9 appends to the service account's key path
+   [ "$PROVIDER" != gcp ] || OLD_KEY_ID="${OLD_KEY_ID##*/}"
    # An earlier, interrupted rotation may already have saved the key being
    # replaced. Never overwrite that record: after step 6 the .enc holds the
    # replacement, so re-reading OLD_KEY_ID from it would name the new key.
