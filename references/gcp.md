@@ -660,10 +660,20 @@ if [ -z "$KEY_ID" ]; then
   done
 fi
 [ -n "$KEY_ID" ] || { echo "ERROR: could not determine this member's key ID; nothing recorded."; exit 1; }
+# A different key already recorded for this member (re-onboarding after the
+# .enc went missing) may still be live: queue it in revoke_pending, which
+# rotation step 9 and member removal work through, instead of dropping it
+OLD_KEY=$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end) | .key_ids[$e] // empty' .cloud-config.json)
 jq --arg e "$USER_EMAIL" --arg k "$KEY_ID" '
-  if .providers then .providers |= map(if .provider == "gcp" then .key_ids[$e] = $k else . end)
-  else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \
-  && mv .cloud-config.json.tmp .cloud-config.json
+  def rec: (if (.key_ids[$e] // "") != "" and .key_ids[$e] != $k
+      then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [.key_ids[$e]] | unique)
+      else . end) | .key_ids[$e] = $k;
+  if .providers then .providers |= map(if .provider == "gcp" then rec else . end)
+  else rec end' .cloud-config.json > .cloud-config.json.tmp \
+  && mv .cloud-config.json.tmp .cloud-config.json \
+  || { rm -f .cloud-config.json.tmp; echo "ERROR: could not record the key in .cloud-config.json; credentials.json is kept, re-run this step."; exit 1; }
+[ -z "$OLD_KEY" ] || [ "$OLD_KEY" = "$KEY_ID" ] \
+  || echo "NOTE: $OLD_KEY was recorded for $USER_EMAIL and is now queued in revoke_pending; revoke it (Credential Rotation step 9)."
 ```
 
 ## Key Management

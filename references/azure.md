@@ -477,15 +477,21 @@ if [ -n "$APP_OBJECT_ID" ]; then
   SP_OBJECT_ID="${SP_OBJECT_ID:-$(pend sp_object_id)}"
   [ "$RA_OK" = 0 ] || [ -z "$SP_OBJECT_ID" ] || remove_role_assignments
   if [ "$RA_OK" = 1 ]; then
-    # Its secret IDs, for clearing their "unrevoked" entries once it is gone
-    APP_KIDS=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-      -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '[.passwordCredentials[].keyId] | join(" ")' 2>/dev/null)
-    HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
-      -H "Authorization: Bearer $GRAPH_TOKEN")
-    case "$HTTP" in
-      204|404) echo "Application ${SP_NAME:-$APP_OBJECT_ID} is deleted." ;;
-      *) RB_OK=0; echo "WARNING: could not delete application $APP_OBJECT_ID (HTTP $HTTP)." ;;
-    esac
+    # Its secret IDs, for clearing their "unrevoked" entries once it is gone:
+    # after the deletion they can no longer be read, so delete only once the
+    # list was retrieved
+    if R=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+           -H "Authorization: Bearer $GRAPH_TOKEN") \
+       && APP_KIDS=$(printf '%s' "$R" | jq -er '[.passwordCredentials[].keyId] | join(" ")'); then
+      HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
+        -H "Authorization: Bearer $GRAPH_TOKEN")
+      case "$HTTP" in
+        204|404) echo "Application ${SP_NAME:-$APP_OBJECT_ID} is deleted." ;;
+        *) RB_OK=0; echo "WARNING: could not delete application $APP_OBJECT_ID (HTTP $HTTP)." ;;
+      esac
+    else
+      RB_OK=0; echo "WARNING: could not list the secrets of $APP_OBJECT_ID; the application is kept. Re-run this block."
+    fi
   else
     # Keep the application: its service principal is how a retry finds the
     # remaining role assignments
@@ -586,7 +592,10 @@ if [ -n "$APP_ID" ]; then
     sleep "$DELAY"
     if OUT=$(az ad app show --id "$APP_ID" --query id -o tsv 2>&1); then
       # Its secret IDs, for clearing their "unrevoked" entries once it is gone
-      APP_KIDS=$(az ad app credential list --id "$APP_ID" --query '[].keyId' -o tsv 2>/dev/null | tr '\n' ' ')
+      # (after the deletion they can no longer be read: stop if listing fails)
+      APP_KIDS=$(az ad app credential list --id "$APP_ID" --query '[].keyId' -o tsv) \
+        || { echo "ERROR: could not list the secrets of $APP_ID; the application is kept. Re-run this block."; exit 1; }
+      APP_KIDS=$(printf '%s' "$APP_KIDS" | tr '\n' ' ')
       az ad app delete --id "$APP_ID" || { echo "ERROR: could not delete application $APP_ID; re-run this block."; exit 1; }
       break
     elif ! printf '%s' "$OUT" | grep -qiE 'does not exist|ResourceNotFound|NotFound'; then
@@ -848,9 +857,15 @@ trap - INT TERM HUP
 
 # Record which secret is this member's (not secret), so offboarding can find
 # it without the member's passphrase; commit .cloud-config.json with the .enc
+# A different secret already recorded for this member (re-onboarding after
+# the .enc went missing) may still be live: queue it in revoke_pending
+OLD_KEY=$(jq -r --arg e "$USER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end) | .key_ids[$e] // empty' .cloud-config.json)
 if ! { jq --arg e "$USER_EMAIL" --arg k "$NEW_SECRET_KEY_ID" '
-  if .providers then .providers |= map(if .provider == "azure" then .key_ids[$e] = $k else . end)
-  else .key_ids[$e] = $k end' .cloud-config.json > .cloud-config.json.tmp \
+  def rec: (if (.key_ids[$e] // "") != "" and .key_ids[$e] != $k
+      then .revoke_pending[$e] = (((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + [.key_ids[$e]] | unique)
+      else . end) | .key_ids[$e] = $k;
+  if .providers then .providers |= map(if .provider == "azure" then rec else . end)
+  else rec end' .cloud-config.json > .cloud-config.json.tmp \
   && mv .cloud-config.json.tmp .cloud-config.json; }; then
   rm -f .cloud-config.json.tmp
   echo "ERROR: could not record the secret in .cloud-config.json; revoking it."
@@ -858,6 +873,8 @@ if ! { jq --arg e "$USER_EMAIL" --arg k "$NEW_SECRET_KEY_ID" '
     bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
   exit 1
 fi
+[ -z "$OLD_KEY" ] || [ "$OLD_KEY" = "$NEW_SECRET_KEY_ID" ] \
+  || echo "NOTE: $OLD_KEY was recorded for $USER_EMAIL and is now queued in revoke_pending; revoke it (Credential Rotation step 9)."
 ```
 
 **Note:** The `.cloud-config.json` for Azure should also store `tenant` alongside the other fields.

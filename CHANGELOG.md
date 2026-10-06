@@ -172,6 +172,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - Member removal deletes credential files with `git --literal-pathspecs rm`, so wildcard characters in an email cannot match another member's file.
 - Azure CLI Grant Roles selects and verifies the recorded subscription before looking up the service principal.
 - AWS rollback saves the access key IDs it deleted in `.cloud-setup-pending.json` when the config cleanup fails, and a retry clears their `unrevoked` entries using those IDs and the key in the kept `credentials.json`.
+- Re-onboarding a member whose `key_ids` entry names a different key or secret queues that old ID in `revoke_pending` instead of overwriting the only record of it (GCP and Azure).
+- Azure rollback (REST and CLI) deletes the application only after its secret IDs were listed, so their `unrevoked` entries can still be cleared.
 
 ## [1.4.0] - 2026-04-10
 
