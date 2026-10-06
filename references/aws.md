@@ -390,15 +390,25 @@ fi
 pending "$IAM_USER" || { echo "ERROR: could not update .cloud-setup-pending.json; rolling back."; rollback_aws_setup; exit 1; }
 # Create the user and add to group; on any failure, roll back and stop
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  # A lost response can hide a user that was created (the name was free just
-  # before): drop it from the record only when AWS confirms it is absent,
-  # otherwise roll it back with the group and keep it recorded
+  # A user found now was created after the absence check above: by this run (a
+  # lost response) or by a concurrent setup for the same email and prefix.
+  # Ownership is unknown, so the user is never deleted here: mark the record,
+  # and a later rollback removes it only once a person confirms it is this run's
   if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
-    CREATED_USER=1
+    if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+      && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
+      echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another setup for the same email."
+      echo "Check with the user before running Rollback a Failed Setup with CONFIRM_USER=1 (it removes $IAM_USER)."
+    else
+      # Unmarked, the record would let a rollback delete that user: leave it out
+      rm -f .cloud-setup-pending.json.tmp; pending "" || true
+      echo "ERROR: create-user failed, $IAM_USER exists, and the record could not be marked; it was left out of the record."
+      echo "Check with the user whether $IAM_USER is this run's; only then delete it by hand."
+    fi
   else
     pending ""
   fi
-  echo "ERROR: could not create IAM user $IAM_USER; rolling back."
+  echo "Rolling back this run's group."
   rollback_aws_setup; exit 1
 fi
 CREATED_USER=1

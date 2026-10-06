@@ -831,7 +831,11 @@ echo "New secret keyId: $NEW_SECRET_KEY_ID (OBJECT_ID=$OBJECT_ID)"
   --arg password "$SECRET" \
   --arg tenant "$TENANT_ID" \
   --arg keyId "$NEW_SECRET_KEY_ID" \
-  '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json)
+  '{appId: $appId, password: $password, tenant: $tenant, keyId: $keyId}' > credentials.json) \
+  || { rm -f credentials.json; echo "ERROR: could not write credentials.json; revoking the new secret."
+       CRED_ID="$NEW_SECRET_KEY_ID" CRED_ID_FROM_RESPONSE=1 OBJECT_ID="$OBJECT_ID" GRAPH_TOKEN="$GRAPH_TOKEN" \
+         bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh azure
+       trap - INT TERM HUP; exit 1; }
 # credentials.json now marks the run as unfinished for the next session
 trap - INT TERM HUP
 

@@ -544,7 +544,20 @@ KEYS_BEFORE=$(list_keys) || { echo "ERROR: could not list the account's keys; no
 # record the candidates for a person to check instead of deleting them.
 record_new_keys() {
   local AFTER NEW NAME
-  AFTER=$(list_keys) || { echo "WARNING: could not list keys; compare them with the list before this call by hand."; return 1; }
+  if ! AFTER=$(list_keys); then
+    echo "WARNING: could not list keys; compare them with the list before this call by hand."
+    # Nothing else would show that a key may exist: record a placeholder, so
+    # the next session reports it instead of starting over
+    if [ -f .cloud-config.json ]; then
+      jq --arg sa "$SA_EMAIL" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \
+        '.unrevoked = ((.unrevoked // []) + [{provider: "gcp", id: "unknown key of \($sa)", member: $m, ambiguous: true,
+           note: "a key create call failed and the keys could not be listed afterwards: compare the account keys with key_ids", at: $t}])' \
+        .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+        && echo "Recorded under \"unrevoked\" in .cloud-config.json; commit it." \
+        || { rm -f .cloud-config.json.tmp; echo "ERROR: could not record it either: $SA_EMAIL may have a key no record names."; }
+    fi
+    return 1
+  fi
   # (sed drops the empty line an empty list leaves, which grep -f would match everywhere)
   NEW=$(printf '%s\n' "$AFTER" | grep -vxF -f <(printf '%s\n' "$KEYS_BEFORE" | sed '/^$/d') || true)
   [ -n "$NEW" ] || return 0

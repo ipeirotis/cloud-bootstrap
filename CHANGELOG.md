@@ -157,6 +157,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - `install.sh` and `update.sh` refuse a MANIFEST that lists an absolute or `..` path, or omits `VERSION` or `SKILL.md`, and check those two arrived non-empty, before replacing the installed skill.
 - GCP and Azure member removal keep the credential file when clearing an early-revoked member's state in `.cloud-config.json` fails.
 - Azure secret creation (first-time REST and Add Team Member) builds the request body with `jq`, so an email with JSON-significant characters is encoded correctly.
+- AWS first-time setup no longer deletes a user that appears after a failed `create-user` (it may be a concurrent setup's for the same email): the record is marked `ambiguous`, and only this run's group is rolled back.
+- Azure Add Team Member checks the `credentials.json` write and revokes the new secret if it fails.
+- GCP Add Team Member records an `unknown key of <account>` placeholder under `unrevoked` when a key create call fails and the keys cannot be listed afterwards.
 
 ## [1.4.0] - 2026-04-10
 
