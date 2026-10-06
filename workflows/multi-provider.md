@@ -230,6 +230,13 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
       # gcloud CLI auth store) work. The shared cleanup below removes
       # /tmp/credentials.json, so copy to a stable, private path first.
       GCP_ADC_KEY="/tmp/gcp-adc-credentials.json"
+      # A different account activated earlier (the configured service account
+      # changed) stays cached in gcloud until revoked: revoke it, since the
+      # key file that names it is about to be replaced
+      PRIOR_SA=$(jq -r '.client_email // empty' "$GCP_ADC_KEY" 2>/dev/null || true)
+      if [ -n "$PRIOR_SA" ] && [ "$PRIOR_SA" != "$SA_CFG" ]; then
+        gcloud auth revoke "$PRIOR_SA" >/dev/null 2>&1 || true
+      fi
       (umask 077 && cp /tmp/credentials.json "$GCP_ADC_KEY")
       export GOOGLE_APPLICATION_CREDENTIALS="$GCP_ADC_KEY"
       if [ -n "$CLAUDE_ENV_FILE" ]; then

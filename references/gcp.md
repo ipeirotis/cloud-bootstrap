@@ -193,6 +193,13 @@ if [ -n "$CLAUDE_ENV_FILE" ]; then
     echo "export GOOGLE_APPLICATION_CREDENTIALS=\"$ADC_KEY\"" >> "$CLAUDE_ENV_FILE"
 fi
 
+# A different account activated earlier (the configured service account
+# changed) stays cached in gcloud until revoked: revoke it now that the new
+# one is in place
+NEW_SA=$(jq -r '.client_email // empty' "$ADC_KEY" 2>/dev/null || true)
+if [ -n "$PRIOR_SA" ] && [ "$PRIOR_SA" != "$NEW_SA" ]; then
+  gcloud auth revoke "$PRIOR_SA" >/dev/null 2>&1 || true
+fi
 GCP_ACTIVATED=1
 echo "GCP credentials activated for $USER_EMAIL (gcloud CLI + Python ADC)"
 ```
@@ -669,6 +676,9 @@ if [ -z "$PROJECT_ID" ] || ! gcloud config set project "$PROJECT_ID" 2>/dev/null
    || [ "$(gcloud config get-value project 2>/dev/null)" != "$PROJECT_ID" ]; then
   gcp_fail "could not select GCP project '$PROJECT_ID'"
 fi
+# A different account activated earlier (the configured service account
+# changed) stays cached until revoked
+[ -z "$PRIOR_SA" ] || [ "$PRIOR_SA" = "$SA_CFG" ] || gcloud auth revoke "$PRIOR_SA" >/dev/null 2>&1 || true
 export GOOGLE_APPLICATION_CREDENTIALS="$ADC_KEY"
 # Persist for the rest of the session: snippets run in short-lived shells, and
 # Python clients in later commands need GOOGLE_APPLICATION_CREDENTIALS too
