@@ -648,12 +648,20 @@ discard_unknown_secret() {
   # holds it; but a new same-label secret may instead come from an overlapping
   # run of this member. Record the candidates for a person to check instead of
   # removing them (commit .cloud-config.json).
+  UNREC=""
   for K in $NEW; do
     jq --arg id "$K" --arg m "$USER_EMAIL" --arg t "$(date -u +%FT%TZ)" \
       '.unrevoked = ((.unrevoked // []) + [{provider: "azure", id: $id, member: $m, ambiguous: true,
          note: "may be an unused secret from a failed addPassword call, or one an overlapping run created", at: $t}])' \
-      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      || { rm -f .cloud-config.json.tmp; UNREC="$UNREC $K"; }
   done
+  if [ -n "$UNREC" ]; then
+    # Nothing durable names these secrets: stop with the IDs on screen
+    echo "ERROR: could not record these secrets in .cloud-config.json (fix the file, then add them under \"unrevoked\" by hand):"
+    printf '  %s\n' $UNREC
+    exit 1
+  fi
   echo "Secrets created since the request began (recorded as ambiguous under \"unrevoked\"):"; printf '  %s\n' $NEW
   echo "Remove each one no run of yours is using (not in key_ids once that run is committed)."
   exit 1

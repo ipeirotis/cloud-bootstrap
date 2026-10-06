@@ -287,6 +287,9 @@ USER_EMAIL=$(git config user.email)
 # account get distinct names. Keep values already set (a rerun, or names the
 # user chose) and print them: later snippets of this setup need the same names
 # until .cloud-config.json records them.
+# A generated group name carries a random suffix no other setup can share; a
+# chosen one (or a rerun's) can collide with a concurrent setup
+GROUP_GENERATED=""; [ -n "$GROUP_NAME" ] || GROUP_GENERATED=1
 if [ -z "$GROUP_NAME" ] || [ -z "$USER_PREFIX" ]; then
   REPO_SLUG=$(basename "$(git rev-parse --show-toplevel)" | sed 's/[^A-Za-z0-9+=,_-]/-/g' | cut -c1-16)
   SUFFIX=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
@@ -342,7 +345,16 @@ if ! aws iam create-group --group-name "$GROUP_NAME"; then
   # A lost response can hide a group that was created: keep the record unless
   # the group is confirmed absent
   if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
-    echo "ERROR: create-group failed and $GROUP_NAME may exist; run Rollback a Failed Setup (the record is kept)."
+    if [ -z "$GROUP_GENERATED" ]; then
+      # A chosen name: the group may be a concurrent setup's that won the
+      # race, so the rollback must not touch it unless a person confirms
+      jq '. + {ambiguous_group: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+        && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+      echo "ERROR: create-group failed and $GROUP_NAME exists, created by this run or by another setup using the same name."
+      echo "Check with the user before running Rollback a Failed Setup with CONFIRM_GROUP=1 (or delete the record if it is not this run's)."
+    else
+      echo "ERROR: create-group failed and $GROUP_NAME may exist; run Rollback a Failed Setup (the record is kept)."
+    fi
   else
     rm -f .cloud-setup-pending.json
     echo "ERROR: could not create IAM group $GROUP_NAME; nothing was created."
@@ -407,6 +419,11 @@ IAM_USER="${IAM_USER:-$(pend iam_user)}"   # empty: the user was never created
 # An ambiguous record (Add Team Member found the user after a failed
 # create-user) may name a user another run created: delete it only when a
 # person confirmed it is this run's
+if [ "$(pend ambiguous_group)" = true ] && [ "${CONFIRM_GROUP:-}" != 1 ]; then
+  echo "ERROR: $PENDING marks group $(pend group) as possibly another setup's; nothing deleted."
+  echo "Confirm with the user it is this run's group, then re-run with CONFIRM_GROUP=1 (or delete $PENDING if it is not)."
+  exit 1
+fi
 if [ "$(pend ambiguous)" = true ] && [ "${CONFIRM_USER:-}" != 1 ]; then
   echo "ERROR: $PENDING marks $IAM_USER as possibly created by another run; nothing deleted."
   echo "Confirm with the user it is this run's user, then re-run with CONFIRM_USER=1 (or delete $PENDING if it is not)."

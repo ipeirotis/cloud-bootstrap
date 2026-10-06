@@ -350,8 +350,14 @@ rm -rf "$WORK"
 # Delete the account only once its bindings are gone: afterwards Google
 # rewrites them as deleted-principal members this block can no longer match
 if [ "$RB_OK" = 1 ]; then
-  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-    "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" -H "Authorization: Bearer $TOKEN")
+  # A just-created account can read as missing (404) for a minute or more:
+  # count 404 as deleted only once it persists across retries
+  for DELAY in 0 20 40 60; do
+    sleep "$DELAY"
+    HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+      "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL" -H "Authorization: Bearer $TOKEN")
+    [ "$HTTP" = 404 ] || break
+  done
   case "$HTTP" in
     200|404) echo "Service account $SA_EMAIL is deleted." ;;
     *) RB_OK=0; echo "WARNING: could not delete $SA_EMAIL (HTTP $HTTP)." ;;
@@ -472,12 +478,20 @@ record_new_keys() {
     # rollback deletes the service account with every key on it
     echo "Run Rollback a Failed Setup (it deletes $SA_EMAIL) before retrying."; return 0
   fi
+  local UNREC=""
   for NAME in $NEW; do
     jq --arg id "$NAME" --arg m "$(git config user.email)" --arg t "$(date -u +%FT%TZ)" \
       '.unrevoked = ((.unrevoked // []) + [{provider: "gcp", id: $id, member: $m, ambiguous: true,
          note: "may be an unused key from a failed create call, or a teammate'"'"'s key created at the same time", at: $t}])' \
-      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json
+      .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+      || { rm -f .cloud-config.json.tmp; UNREC="$UNREC $NAME"; }
   done
+  if [ -n "$UNREC" ]; then
+    # Nothing durable names these keys: stop with the IDs on screen
+    echo "ERROR: could not record these keys in .cloud-config.json (fix the file, then add them under \"unrevoked\" by hand):"
+    printf '  %s\n' $UNREC
+    return 1
+  fi
   echo "Keys created since the request began (recorded as ambiguous under \"unrevoked\"; commit .cloud-config.json):"
   printf '  %s\n' $NEW
   echo "Delete each one that is not a teammate's (not in any key_ids entry once their onboarding is committed)."
