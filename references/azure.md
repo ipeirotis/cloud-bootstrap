@@ -297,9 +297,14 @@ cleanup_failed_setup() {
   # If the create call failed after Graph made the app (no ID came back),
   # find it by its unique per-run name
   if [ -z "$APP_OBJECT_ID" ] && [ -n "${SP_NAME:-}" ]; then
-    APP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
-      --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
-      -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.value[0].id // empty') || APP_OBJECT_ID=""
+    # (Captured before jq: a failed lookup must not read as "no application")
+    if R=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
+         --data-urlencode "\$filter=displayName eq '$SP_NAME'" \
+         -H "Authorization: Bearer $GRAPH_TOKEN"); then
+      APP_OBJECT_ID=$(printf '%s' "$R" | jq -r '.value[0].id // empty') || APP_OBJECT_ID=""
+    else
+      echo "WARNING: could not look up application $SP_NAME; if it exists, run Rollback a Failed Setup."
+    fi
   fi
   if [ -n "$APP_OBJECT_ID" ]; then
     if curl -sS --fail -X DELETE "https://graph.microsoft.com/v1.0/applications/$APP_OBJECT_ID" \
@@ -917,9 +922,13 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
 # Plus every secret carrying this member's label: a member added before
 # key_ids existed, or a secret a failed run never recorded, has no other
 # record. A labelled secret the config gives to another member stays.
-LABELLED=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
-  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$MEMBER_EMAIL" \
-  '.passwordCredentials[] | select(.displayName == $n) | .keyId') \
+# (The response is captured before jq reads it: in a pipeline, a failed
+# request would give jq empty input and pass as "no labelled secrets")
+APP_JSON=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  -H "Authorization: Bearer $GRAPH_TOKEN") \
+  && LABELLED=$(printf '%s' "$APP_JSON" | jq -r --arg n "claude-code-$MEMBER_EMAIL" \
+    '(.passwordCredentials | if type == "array" then . else error("no secret list") end)[]
+     | select(.displayName == $n) | .keyId') \
   || { echo "ERROR: could not list the application's secrets; nothing removed."; exit 1; }
 OTHERS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end)
   | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)

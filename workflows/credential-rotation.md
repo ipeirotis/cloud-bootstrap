@@ -325,6 +325,15 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
            [ "$OUT" = "$WANT_USER" ] || { echo "ERROR: key $1 belongs to $OUT, not $WANT_USER; not revoking it."; return 1; }
            aws iam delete-access-key --user-name "$OUT" --access-key-id "$1"
          else
+           # A key created moments ago can read as missing until IAM
+           # propagates: the absence must hold before the record is cleared
+           for DELAY in 20 40 60; do
+             printf '%s' "$OUT" | grep -q NoSuchEntity || break
+             sleep "$DELAY"
+             if OUT=$(aws iam get-access-key-last-used --access-key-id "$1" --query UserName --output text 2>&1); then
+               echo "ERROR: key $1 exists after all (IAM was still propagating); retry."; return 1
+             fi
+           done
            printf '%s' "$OUT" | grep -q NoSuchEntity && echo "Key $1 no longer exists; clearing its record."
          fi ;;
        azure)

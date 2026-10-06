@@ -355,7 +355,15 @@ fi
 if ! aws iam create-group --group-name "$GROUP_NAME"; then
   # A lost response can hide a group that was created: keep the record unless
   # the group is confirmed absent
-  if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: something created moments ago can read as
+  # missing, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 40; do
+    sleep "$D"
+    if OUT=$(aws iam get-group --group-name "$GROUP_NAME" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ] || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
     if [ -z "$GROUP_GENERATED" ]; then
       # A chosen name: the group may be a concurrent setup's that won the
       # race, so the rollback must not touch it unless a person confirms
@@ -396,7 +404,15 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # lost response) or by a concurrent setup for the same email and prefix.
   # Ownership is unknown, so the user is never deleted here: mark the record,
   # and a later rollback removes it only once a person confirms it is this run's
-  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: something created moments ago can read as
+  # missing, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 40; do
+    sleep "$D"
+    if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ] || ! printf '%s' "$OUT" | grep -q NoSuchEntity; then
     if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
       && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
       echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another setup for the same email."
@@ -490,6 +506,16 @@ if [ -n "$IAM_USER" ]; then
     aws iam delete-user --user-name "$IAM_USER" || RB_OK=0
   elif ! gone "$OUT"; then
     RB_OK=0; echo "WARNING: could not list $IAM_USER's keys: $OUT"
+  else
+    # IAM is eventually consistent: a user this setup created moments ago can
+    # read as missing. Count it gone only if the absence holds
+    for D in 20 40 60; do
+      sleep "$D"
+      if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1) || ! gone "$OUT"; then
+        RB_OK=0; echo "WARNING: $IAM_USER is not confirmed gone (IAM may still be propagating); re-run this rollback."
+        break
+      fi
+    done
   fi
 fi
 if [ -z "$GROUP_NAME" ]; then
@@ -618,8 +644,15 @@ if ! aws iam create-user --user-name "$IAM_USER"; then
   # A user found now was created after the check above: by this run (a lost
   # response) or by an overlapping run for the same email. Ownership is
   # unknown, so mark the record ambiguous: the rollback then never deletes the
-  # user unless a person confirms it is this run's
-  if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
+  # user unless a person confirms it is this run's. IAM is eventually
+  # consistent, so a NoSuchEntity must hold across the propagation window
+  FOUND=0
+  for D in 0 20 40; do
+    sleep "$D"
+    if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then FOUND=1; break; fi
+    printf '%s' "$OUT" | grep -q NoSuchEntity || break
+  done
+  if [ "$FOUND" = 1 ]; then
     if jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
       && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json; then
       echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another run for the same email."
@@ -894,6 +927,18 @@ if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMet
   aws iam delete-user --user-name "$IAM_USER" \
     || { echo "ERROR: could not delete $IAM_USER; the credential file stays. Retry."; exit 1; }
 elif printf '%s' "$KEYS" | grep -q NoSuchEntity; then
+  # IAM is eventually consistent: a user created moments ago can read as
+  # missing before it propagates. Require the absence to hold across the
+  # propagation window before treating the user and its keys as gone
+  for D in 20 40 60; do
+    sleep "$D"
+    if ERR=$(aws iam get-user --user-name "$IAM_USER" 2>&1 >/dev/null); then
+      echo "ERROR: $IAM_USER exists after all (IAM was still propagating); the credential file stays. Re-run this block."
+      exit 1
+    fi
+    printf '%s' "$ERR" | grep -q NoSuchEntity \
+      || { echo "ERROR: could not confirm $IAM_USER is gone: $ERR"; exit 1; }
+  done
   echo "$IAM_USER no longer exists."
 else
   echo "ERROR: could not list $IAM_USER's access keys: $KEYS"; exit 1

@@ -1,7 +1,7 @@
 ---
 name: cloud-bootstrap
 metadata:
-  version: "1.5.0"
+  version: "1.5.1"
 description: >-
   Manages encrypted cloud-provider credentials (GCP, AWS, Azure) stored in a
   repo so they persist across Claude Code sessions.

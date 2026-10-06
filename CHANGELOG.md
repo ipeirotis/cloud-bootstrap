@@ -3,6 +3,14 @@
 All notable changes to cloud-bootstrap are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-10-06
+
+Fixes from further Codex review of the vendored copy in ipeirotis/sql-llm#28.
+
+### Fixed
+- Azure Remove Team Member captures the application response before `jq` reads it, so a failed Graph request stops the removal instead of reading as "no labelled secrets" (which let the credential file go while unrecorded legacy secrets stayed active). Failed-setup cleanup warns when its application lookup fails instead of treating it as "no application".
+- AWS: IAM is eventually consistent, so a `NoSuchEntity` right after a create is no longer taken as proof of absence. Remove Team Member, Rollback a Failed Setup, the create-group/create-user failure checks in First-Time Setup and Add Team Member, and rotation's key revocation re-check over about a minute before treating a user or key as gone; one that appears meanwhile stops the run for a retry.
+
 ## [1.5.0] - 2026-10-05
 
 Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
