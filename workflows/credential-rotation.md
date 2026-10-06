@@ -86,7 +86,19 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
        || { echo "ERROR: could not list $IAM_USER's keys; nothing created."; exit 1; }
      [ "$NKEYS" -lt 2 ] || { echo "ERROR: $IAM_USER already has $NKEYS keys: run step 9 to delete the keys in revoke_pending first; nothing created."; exit 1; }
      (umask 077 && aws iam create-access-key --user-name "$IAM_USER" > credentials.json)
-     # then reformat (access_key_id/secret_access_key/region) as in aws.md
+     # Reformat as in aws.md, keeping the region already configured. If that
+     # fails, revoke the new key before stopping: the nested response must
+     # never be encrypted, and the key would otherwise stay live
+     AWS_REGION=$(aws_cfg region); AWS_REGION="${AWS_REGION:-us-east-1}"
+     (umask 077 && jq --arg region "$AWS_REGION" '{
+       access_key_id: .AccessKey.AccessKeyId,
+       secret_access_key: .AccessKey.SecretAccessKey,
+       region: $region
+     }' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json \
+       && jq -e '(.access_key_id | type == "string" and length > 0) and (.secret_access_key | type == "string" and length > 0)' \
+            credentials.json >/dev/null \
+       || { rm -f credentials_clean.json; echo "ERROR: could not reformat credentials.json; revoking the new key."
+            bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh aws key; exit 1; }
      ```
      (AWS allows up to 2 access keys per user, so the new key can be created before the old one is revoked in step 9.)
 5. Verify the **new** key works before touching the old one. The provider smoke test alone is not enough: the CLI is still logged in as the old key (or the bootstrap admin), so it would pass without using the replacement. Activate `credentials.json` in an isolated config and confirm the caller identity:
