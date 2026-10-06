@@ -988,6 +988,13 @@ if [ -n "${KEY_ID:-}" ]; then
 fi
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
+  # The listing succeeded and shows no secret labelled for this member, so a
+  # "secret labelled ..." placeholder (from a failed addPassword or discard)
+  # names nothing live: clear it
+  jq --arg e "$MEMBER_EMAIL" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "azure" or .member != $e
+      or .id != "secret labelled claude-code-\($e)")] | if .unrevoked == [] then del(.unrevoked) else . end' \
+    .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+    || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; nothing removed. Fix it and retry."; exit 1; }
   # A compromise rotation may already have deleted the member's only
   # credential (revoked_early, no replacement): nothing is live, so clear the
   # member's local state directly
