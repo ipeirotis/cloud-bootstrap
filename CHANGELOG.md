@@ -139,6 +139,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - The installer, updater and manual install resolve the release commit with `git ls-remote` instead of GitHub's unauthenticated REST API, whose 60-requests-per-hour quota is shared per IP address.
 - Every identity-creation snippet stops before any provider request unless `git check-ignore` confirms `credentials.json` and `.cloud-setup-pending.json` are ignored, so a failed `.gitignore` write cannot leave a live key committable.
 - Azure rollback (REST and CLI), like the GCP and AWS ones, drops the `unrevoked` entries the deleted application resolves: its secret IDs, read before the deletion, and the discard script's entries for that app.
+- GCP member removal retries a 404 before counting a key as deleted, as `discard-credential.sh` does.
+- Azure member removal also removes every secret carrying the member's `claude-code-<email>` label (members added before `key_ids` existed had only one, hand-picked `KEY_ID`), skipping any the config records for another member.
+- GCP and Azure member removal skip `unrevoked` placeholders that name no ID (`unknown key of ...`, `secret labelled ...`): the loops split them into words and tried to delete each word as a key, so removal could never finish.
 
 ## [1.4.0] - 2026-04-10
 

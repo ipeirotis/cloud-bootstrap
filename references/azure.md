@@ -795,7 +795,7 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a team member's secrets (if they leave); the block resolves the application itself. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. Members added before `key_ids` existed have no entry: list the secrets above, find theirs by the `claude-code-<email>` label, and set `KEY_ID` to it.
+Remove a team member's secrets (if they leave); the block resolves the application itself. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. It also removes every secret labelled `claude-code-<email>` (the label setup gives each member's secret), which covers members added before `key_ids` existed; a secret the config records for another member is left alone. For an unlabelled secret, set `KEY_ID` to it.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -809,9 +809,21 @@ OBJECT_ID=$( [ -n "$APP_ID" ] && curl -sS --fail -G "https://graph.microsoft.com
 # (revoke_pending), one an interrupted rotation saved (rotating), and any a
 # failed cleanup recorded as unrevoked
 IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
-  ([.unrevoked[]? | select(.provider == "azure" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
+  ([.unrevoked[]? | select(.provider == "azure" and .member == $e and (.ambiguous | not)) | .id | split("/") | last
+     | select(test(" ") | not)]) as $u   # placeholders such as "unknown key of ..." name no ID
   | (if .providers then (.providers[] | select(.provider=="azure")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
+# Plus every secret carrying this member's label: a member added before
+# key_ids existed, or a secret a failed run never recorded, has no other
+# record. A labelled secret the config gives to another member stays.
+LABELLED=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$MEMBER_EMAIL" \
+  '.passwordCredentials[] | select(.displayName == $n) | .keyId') \
+  || { echo "ERROR: could not list the application's secrets; nothing removed."; exit 1; }
+OTHERS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="azure")) else . end)
+  | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)
+  | .value | (if type == "array" then .[] else . end)' .cloud-config.json)
+for K in $LABELLED; do printf '%s\n' $OTHERS | grep -qxF "$K" || IDS="$IDS $K"; done
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
   # A compromise rotation may already have deleted the member's only
@@ -858,6 +870,12 @@ for ID in $IDS; do
   fi
 done
 [ -z "$FAILED" ] || { echo "Still to do:$FAILED. The credential file stays; retry."; exit 1; }
+# Every labelled secret is gone, so a "secret labelled ..." placeholder the
+# discard script recorded for this member is resolved too
+jq --arg e "$MEMBER_EMAIL" '.unrevoked = [(.unrevoked // [])[] | select(.provider != "azure" or .member != $e
+    or .id != "secret labelled claude-code-\($e)")] | if .unrevoked == [] then del(.unrevoked) else . end' \
+  .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json \
+  || { rm -f .cloud-config.json.tmp; echo "ERROR: could not update .cloud-config.json; the credential file stays. Retry."; exit 1; }
 git rm -q --ignore-unmatch ".cloud-credentials.azure.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
 ```
 

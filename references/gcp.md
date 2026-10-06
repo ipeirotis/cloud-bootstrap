@@ -649,7 +649,8 @@ SA_EMAIL=$(jq -r '(if .providers then (.providers[] | select(.provider=="gcp") |
 # (revoke_pending), one an interrupted rotation saved (rotating), and any a
 # failed cleanup recorded as unrevoked
 IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
-  ([.unrevoked[]? | select(.provider == "gcp" and .member == $e and (.ambiguous | not)) | .id | split("/") | last]) as $u
+  ([.unrevoked[]? | select(.provider == "gcp" and .member == $e and (.ambiguous | not)) | .id | split("/") | last
+     | select(test(" ") | not)]) as $u   # placeholders such as "unknown key of ..." name no ID
   | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 # A member added before key_ids existed: the key found from the listing
@@ -671,10 +672,16 @@ fi
 # or 404 because it already was); the .enc file goes only when every key is.
 FAILED=""
 for ID in $IDS; do
-  HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-    "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
-    -H "Authorization: Bearer $TOKEN")
-  # 404: the key no longer exists (deleted earlier), so its record can go too
+  # A key created moments ago can read as missing (404) for a minute or more:
+  # count 404 as gone only once it persists across retries
+  for DELAY in 0 20 40 60; do
+    sleep "$DELAY"
+    HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+      "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$ID" \
+      -H "Authorization: Bearer $TOKEN")
+    [ "$HTTP" = 404 ] || break
+  done
+  # 404 throughout: the key no longer exists (deleted earlier), so its record can go too
   if [ "$HTTP" = 200 ] || [ "$HTTP" = 404 ]; then
     jq --arg e "$MEMBER_EMAIL" --arg id "$ID" '
       def clr: (if .key_ids[$e] == $id then del(.key_ids[$e]) else . end)
