@@ -803,10 +803,12 @@ CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
 # deletion leaves a live user or key, and the file is the repo's record of it.
 # Each step works from the user's current state, so a retry after a partial
 # run continues where it stopped; a user that no longer exists is done.
+DELETED_KEYS=""
 if KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>&1); then
   for KEY_ID in $KEYS; do
     aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$KEY_ID" \
       || { echo "ERROR: could not delete key $KEY_ID; the credential file stays. Retry."; exit 1; }
+    DELETED_KEYS="$DELETED_KEYS $KEY_ID"
   done
   # delete-user fails while any group membership remains: remove the ones the
   # user still has (none, if an earlier attempt already did)
@@ -825,10 +827,15 @@ else
 fi
 # All gone: now remove the member's credential file and any pending entries
 git rm -q --ignore-unmatch ".cloud-credentials.aws.${MEMBER_EMAIL}.enc" ".cloud-credentials.${MEMBER_EMAIL}.enc"
-# (deleting the user removed every key it had, including any recorded as unrevoked)
-jq --arg e "$MEMBER_EMAIL" '
+# "unrevoked" entries go only when this run proved them gone: the key IDs it
+# deleted, and placeholders naming this user. An entry recorded for another
+# account or an unconfirmed owner stays: it may still be live elsewhere.
+jq --arg e "$MEMBER_EMAIL" --arg u "$IAM_USER" --arg ks "$DELETED_KEYS" '
   def clr: del(.revoke_pending[$e]) | del(.rotating[$e]) | del(.revoked_early[$e]);
-  .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws" or .member != $e)]
+  ($ks | split(" ") | map(select(. != ""))) as $gone
+  | .unrevoked = [(.unrevoked // [])[] | select(.provider != "aws"
+      or ((.id | IN($gone[])) | not)
+         and ((.id == "(user \($u))" or .id == "(all keys of \($u))" or .id == "(new key of \($u))") | not))]
   | if .unrevoked == [] then del(.unrevoked) else . end
   | if .providers then .providers |= map(if .provider == "aws" then clr else . end) else clr end' \
   .cloud-config.json > .cloud-config.json.tmp && mv .cloud-config.json.tmp .cloud-config.json

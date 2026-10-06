@@ -57,8 +57,13 @@ Using the bootstrap token and provider-specific commands:
    discard_new() {
      rm -f "${TMP_ENC:-}"
      # A signal right after the rename must not leave a credential file for a
-     # key this handler is about to revoke (the next session would try it)
-     [ -n "$ENC_EXISTED" ] || rm -f "$ENC_FILE"
+     # key this handler is about to revoke (the next session would try it).
+     # Only this run's ciphertext is removed: an overlapping run for the same
+     # email may have installed its own file there
+     if [ -z "$ENC_EXISTED" ] && [ -n "${OUR_SUM:-}" ] \
+        && [ "$(sha256sum < "$ENC_FILE" 2>/dev/null | cut -c1-64)" = "$OUR_SUM" ]; then
+       rm -f "$ENC_FILE"
+     fi
      echo "ERROR: encryption did not complete; revoking the new $PROVIDER credential."
      TOKEN="${TOKEN:-}" GRAPH_TOKEN="${GRAPH_TOKEN:-}" PROJECT_ID="${PROJECT_ID:-}" SA_EMAIL="${SA_EMAIL:-}" \
          bash .claude/skills/cloud-bootstrap/scripts/discard-credential.sh "$PROVIDER" member
@@ -73,6 +78,7 @@ Using the bootstrap token and provider-specific commands:
         -in credentials.json -out "$TMP_ENC" \
       && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
         | cmp -s - credentials.json \
+      && OUR_SUM=$(sha256sum < "$TMP_ENC" | cut -c1-64) \
       && mv -f "$TMP_ENC" "$ENC_FILE"; then
      trap - INT TERM
    else

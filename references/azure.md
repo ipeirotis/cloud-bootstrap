@@ -185,6 +185,12 @@ In the usual remote setup, the user signs in on their own machine and pastes `AR
 # with pasted tokens, use the REST path below instead
 az account show >/dev/null 2>&1 \
   || { echo "ERROR: az is not signed in here; use the REST path with ARM_TOKEN/GRAPH_TOKEN."; exit 1; }
+# Work in the subscription (and so the tenant) the user named, not whatever the
+# CLI has selected: the lookups and the app below follow the active one
+[ -n "${SUBSCRIPTION_ID:-}" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2; nothing created."; exit 1; }
+az account set --subscription "$SUBSCRIPTION_ID" \
+  && [ "$(az account show --query id -o tsv)" = "$SUBSCRIPTION_ID" ] \
+  || { echo "ERROR: could not select subscription $SUBSCRIPTION_ID; nothing created."; exit 1; }
 # A fixed display name such as "claude-agent" can make create-for-rbac modify an
 # existing app with that name. Derive a repo-specific name, refuse to proceed if
 # it is already taken, and ask the user to approve a different name instead.
