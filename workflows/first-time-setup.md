@@ -48,17 +48,43 @@ Tell them what permissions their personal account needs to create service accoun
 
 Using the bootstrap token and provider-specific commands from the reference file:
 
-1. Create the service account/identity.
-2. Grant ONLY the approved roles.
-3. Generate credentials (key file or access key pair).
-4. Resolve the encryption key using the logic in SKILL.md.
+1. **Resolve the encryption key first**, using the logic in SKILL.md, before anything is created on the provider side. If no key is set, stop here (SKILL.md, Example 3): otherwise setup would leave a live provider credential and a plaintext `credentials.json` that cannot be encrypted. Check `git config user.email` too: it names the credential file and the member's `key_ids` entry, so if it is empty, ask the user to set it before going on (the creation snippets also refuse to run without it).
+1a. **Ignore the plaintext files before anything is created**, so an interrupted run can never leave a committable `credentials.json`. Add to `.gitignore` now:
+   ```
+   # Cloud -- never commit plaintext credentials (written at the repo root
+   # during setup; the hooks' decrypted copies live in the system /tmp)
+   /credentials.json
+   /credentials_clean.json
+   /.cloud-setup-pending.json
+   ```
+   If a run is interrupted, the next session finds what it left and recovers ("Recovering an Interrupted Run" in SKILL.md).
+2. Create the service account/identity with the reference's creation snippet, which first records the identity's names in `.cloud-setup-pending.json`. From here on, if any later step fails (a role grant, key creation, encryption), run "Rollback a Failed Setup" in the provider reference before retrying, so a live identity, key or role grant is not left behind and the collision checks do not block the retry. It reads the names from `.cloud-setup-pending.json`, so it works from a fresh shell.
+3. Grant ONLY the approved roles.
+4. Generate credentials (key file or access key pair).
 5. Encrypt the credentials **with the user's email in the filename**:
    ```bash
    USER_EMAIL=$(git config user.email)
-   echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt \
-     -pass stdin \
-     -in credentials.json -out ".cloud-credentials.${USER_EMAIL}.enc"
+   [ -n "$USER_EMAIL" ] || { echo "ERROR: git config user.email is not set; set it (it names your credential file), then retry."; exit 1; }
+   ENC_FILE=".cloud-credentials.${USER_EMAIL}.enc"
+   # Encrypt to a private temp file, prove it decrypts to the credential, and
+   # only then move it into place in one rename, so a truncated file never
+   # appears under the final name. credentials.json stays until the commit in
+   # item 7: if this run is interrupted anywhere before then, the next session
+   # finds it and recovers ("Recovering an Interrupted Run" in SKILL.md).
+   TMP_ENC=$(umask 077 && mktemp "${ENC_FILE}.tmp.XXXXXX") \
+     || { echo "ERROR: could not create a temp file. Run the provider's setup rollback now (step 2)."; exit 1; }
+   if ! { printf '%s\n' "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass stdin \
+            -in credentials.json -out "$TMP_ENC" \
+          && printf '%s\n' "$KEY" | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin -in "$TMP_ENC" \
+            | cmp -s - credentials.json \
+          && mv -f "$TMP_ENC" "$ENC_FILE"; }; then
+     # Any earlier $ENC_FILE was never touched (only the rename replaces it): keep it
+     rm -f "$TMP_ENC" credentials.json
+     echo "ERROR: encryption failed. Run the provider's setup rollback now (step 2), then retry setup."
+     exit 1
+   fi
    ```
+   If encryption fails, the snippet deletes the plaintext and stops; then run "Rollback a Failed Setup" for the provider (step 2), so no live, unusable credential is left behind.
 6. Save shared config (include `created_at` for credential age tracking):
    ```bash
    cat > .cloud-config.json << EOF
@@ -68,23 +94,22 @@ Using the bootstrap token and provider-specific commands from the reference file
      "service_account": "<service account email or ARN or client ID>",
      "tenant": "<Azure tenant ID, omit for GCP/AWS>",
      "region": "<AWS region, omit for GCP/Azure>",
+     "iam_user_prefix": "<AWS user-name prefix, omit for GCP/Azure>",
+     "key_ids": {"<email>": "<GCP key ID or Azure secret keyId, omit for AWS>"},
      "roles": ["<role1>", "<role2>"],
      "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    }
    EOF
    ```
-7. **Delete the plaintext credentials immediately:**
+   For GCP, fill `key_ids` with the `KEY_ID` from "Create Key" ("Record the key's owner" in `references/gcp.md`); for Azure, with the `keyId` in `credentials.json` (`jq -r .keyId credentials.json`, which is not secret). Offboarding finds a member's credential through this map, without their passphrase.
+7. **Create the SessionStart hook now** (Step 6, items 1–3), then commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, the `.gitignore` update (step 1a), `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` **in one commit**. The plaintext and setup record are ignored files, so they cannot mark a fresh checkout as unfinished: only committing the hook together with the credential guarantees that no checkout has one without the other.
+8. **Only after that commit, delete the setup record and then the plaintext:**
    ```bash
+   # The marker goes first: a marker left without the plaintext would make
+   # the next session roll back the identity this run just committed
+   rm -f .cloud-setup-pending.json
    rm -f credentials.json
    ```
-8. Add to `.gitignore`:
-   ```
-   # Cloud -- never commit plaintext credentials
-   credentials.json
-   credentials_clean.json
-   /tmp/
-   ```
-9. Commit `.cloud-credentials.<email>.enc`, `.cloud-config.json`, and the `.gitignore` update.
 
 ## Step 6: Set Up SessionStart Hook
 
@@ -93,13 +118,13 @@ Create a SessionStart hook that automatically installs the provider CLI **and** 
 1. Create `.claude/hooks/cloud-auth.sh` with the script from the provider reference. Make it executable: `chmod +x .claude/hooks/cloud-auth.sh`
 2. If `.claude/settings.json` does not exist, create it with the hook configuration from the reference.
 3. If `.claude/settings.json` already exists, merge the new `SessionStart` hook into the existing `hooks` object. Do not overwrite existing hooks.
-4. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` along with the other files.
+4. These files are committed together with the credential in Step 5 item 7.
 
 This ensures that future sessions start with the CLI installed and credentials already activated — no manual authentication needed.
 
 ## Step 7: Update CLAUDE.md
 
-Append a `## Cloud Credentials` section to CLAUDE.md (create the file if it doesn't exist) documenting:
+Append a `## Cloud Credentials` section to the repo's agent-instructions file: `CLAUDE.md`, or `AGENTS.md` when that is the file the repo uses (for example, when `CLAUDE.md` only points to `AGENTS.md`). Create `CLAUDE.md` only if neither exists. Document:
 
 - The provider and project/account identifier
 - The service account identity

@@ -10,6 +10,7 @@ This is a Claude Code skill repository — it contains no executable source code
 ├── SKILL.md               # Skill router (frontmatter + phase detection)
 ├── VERSION                # Current version (semver)
 ├── CHANGELOG.md           # Version history and release notes
+├── MANIFEST               # Files install.sh/update.sh place in a repo
 ├── install.sh             # One-line installer script
 ├── update.sh              # Update checker and upgrader
 ├── workflows/
@@ -46,12 +47,12 @@ Key concepts:
 - Keep provider-specific details in `references/<provider>.md`, not in SKILL.md or workflow files.
 - SKILL.md is the router — it detects the phase and tells the agent which workflow file to read. Keep it slim.
 - Workflow-specific details belong in `workflows/<workflow>.md`, not in SKILL.md.
-- Encryption/decryption commands must always use `echo "$KEY" | openssl ... -pass stdin` (never `-pass pass:$KEY`) to avoid leaking the key in process listings.
+- Encryption/decryption commands must always use `printf '%s\n' "$KEY" | openssl ... -pass stdin` (never `-pass pass:$KEY`) to avoid leaking the key in process listings.
 
 ## Versioning
 
 - The canonical version lives in `VERSION` (single line, semver).
-- `SKILL.md` frontmatter carries a `version:` field that must match `VERSION`.
+- `SKILL.md` frontmatter carries the version as `metadata.version` (quoted; a top-level `version:` key fails skill validation), and it must match `VERSION`.
 - When making user-facing changes, bump the version in both places and add a new entry to `CHANGELOG.md`.
 - Use semver: patch for fixes, minor for new features, major for breaking changes.
 

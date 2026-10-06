@@ -122,23 +122,60 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/insta
 
 ```bash
 # From the repo root
-BASE=https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main
+# Every file from one commit: main can move between downloads
+# Resolved with git, not GitHub's REST API, whose unauthenticated quota is
+# shared by everyone behind the same IP address
+SHA=$(git ls-remote https://github.com/ipeirotis/cloud-bootstrap.git refs/heads/main | cut -f1)
+printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo "ERROR: could not resolve the current release commit."; exit 1; }
+BASE=https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/$SHA
 DEST=.claude/skills/cloud-bootstrap
 
-mkdir -p "$DEST/references" "$DEST/workflows"
-
-for FILE in \
-  SKILL.md VERSION \
-  references/gcp.md references/aws.md references/azure.md \
-  workflows/first-time-setup.md workflows/add-team-member.md \
-  workflows/authenticate.md workflows/credential-rotation.md \
-  workflows/permission-escalation.md workflows/multi-provider.md \
-  workflows/uninstall.md; do
-  curl -sSL "$BASE/$FILE" -o "$DEST/$FILE"
+# MANIFEST lists every distributed file (including scripts/discard-credential.sh,
+# which the workflows call when a new credential has to be revoked)
+# Download everything to a temp dir first; install only if every file arrived,
+# so a failed download never leaves a mix of old and new files
+STAGE=$(mktemp -d) && [ -n "$STAGE" ] && [ -d "$STAGE" ] \
+  || { echo "ERROR: could not create a staging directory; nothing changed."; exit 1; }
+trap 'rm -rf "$STAGE"' EXIT
+# To a file first: a download cut off midway must fail here, not leave a
+# shorter list that installs only part of the skill
+curl -fsSL "$BASE/MANIFEST" -o "$STAGE/.manifest" \
+  || { echo "ERROR: could not download MANIFEST; nothing changed."; exit 1; }
+FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$STAGE/.manifest"); rm -f "$STAGE/.manifest"
+[ -n "$FILES" ] || { echo "ERROR: MANIFEST is empty; nothing changed."; exit 1; }
+# Refuse any path outside the skill before creating a directory or file
+for FILE in $FILES; do
+  case "$FILE" in /*|*..*) echo "ERROR: MANIFEST lists an unsafe path ($FILE); nothing changed."; exit 1 ;; esac
 done
+for FILE in $FILES; do
+  mkdir -p "$STAGE/$(dirname "$FILE")"
+  curl -fsSL "$BASE/$FILE" -o "$STAGE/$FILE" || { echo "ERROR: could not download $FILE; nothing changed."; rm -rf "$STAGE"; exit 1; }
+done
+# As install.sh does: every file SKILL.md or a workflow names, and the revocation helper,
+# must have arrived before the old copy is replaced
+for REQ in VERSION SKILL.md scripts/discard-credential.sh \
+           $(cat "$STAGE/SKILL.md" "$STAGE"/workflows/*.md 2>/dev/null \
+             | grep -oE '(workflows|references|scripts)/[A-Za-z0-9_-]+\.(md|sh)' | sort -u); do
+  [ -s "$STAGE/$REQ" ] || { echo "ERROR: the release lacks $REQ; nothing changed."; exit 1; }
+done
+# Record what was installed, as install.sh does, so update.sh can later remove
+# files a newer release drops
+printf '%s\n' $FILES > "$STAGE/.installed-files"
+# Swap the complete staged copy in with renames (as update.sh does): a failure
+# leaves the existing installation untouched, never a mix of two releases
+mkdir -p "$(dirname "$DEST")"
+NEW=$(mktemp -d "$(dirname "$DEST")/.cloud-bootstrap.new.XXXXXX") \
+  || { echo "ERROR: could not create a directory next to $DEST; nothing changed."; exit 1; }
+OLD_DIR="$(dirname "$DEST")/.cloud-bootstrap.old.$$"
+trap 'rm -rf "$STAGE" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
+cp -R "$STAGE"/. "$NEW"/ && chmod 755 "$NEW" \
+  || { echo "ERROR: could not prepare the new copy; nothing changed."; exit 1; }
+if [ -e "$DEST" ]; then mv "$DEST" "$OLD_DIR" || { echo "ERROR: could not move the old copy aside; nothing changed."; exit 1; }; fi
+mv "$NEW" "$DEST" || { echo "ERROR: could not move the new copy into place; the old one is restored."; exit 1; }
+rm -rf "$OLD_DIR"
 
 git add "$DEST"
-git commit -m "Add cloud-bootstrap skill"
+git commit -m "Add cloud-bootstrap skill" -- "$DEST"   # only the skill, not anything else already staged
 ```
 
 **Or** just tell Claude Code on the Web:
@@ -156,7 +193,7 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/updat
 This will:
 1. Show your installed version and the latest version
 2. Display the changelog entries you'd be getting
-3. Ask for confirmation before updating
+3. Ask for confirmation on your terminal before updating (where no terminal is available, run `... | bash -s -- --yes`)
 
 You can also check your installed version at any time: `cat .claude/skills/cloud-bootstrap/VERSION`.
 
@@ -171,8 +208,8 @@ You can also check your installed version at any time: `cat .claude/skills/cloud
 | Provider | Bootstrap Command | What Gets Created | Team Limit |
 |----------|------------------|-------------------|------------|
 | GCP | `gcloud auth print-access-token` | Service account + JSON key per user | ~10 (keys per SA) |
-| AWS | `aws sts get-session-token` | IAM group + IAM user per team member | Unlimited |
-| Azure | `az account get-access-token` | Service principal + client secret per user | Unlimited |
+| AWS | `aws sts get-session-token` | IAM group + IAM user per team member | Bounded by the account's IAM user quota |
+| Azure | `az account get-access-token` | Service principal + client secret per user | Bounded: secrets share the app manifest's credential limit, and rotated or departed members' secrets count until removed |
 
 ## Files Created in Your Repo
 
