@@ -23,12 +23,12 @@ To completely remove cloud-bootstrap from a repo:
    ```
 4. **Remove the SessionStart hook:**
    - Delete `.claude/hooks/cloud-auth.sh`
-   - In `.claude/settings.json`, remove only the hook whose command runs `cloud-auth.sh`; keep any other SessionStart hooks (drop a matcher group or `SessionStart` itself only if nothing is left in it, and delete the file only if nothing else remains):
+   - In `.claude/settings.json`, remove only the hook whose command runs `cloud-auth.sh` itself (`bash "$CLAUDE_PROJECT_DIR/.claude/hooks/cloud-auth.sh"` as setup writes it, or the script path alone), not one that merely passes that path to another program; keep any other SessionStart hooks (drop a matcher group or `SessionStart` itself only if nothing is left in it, and delete the file only if nothing else remains):
      ```bash
      # Nothing to do when the file or its SessionStart list is missing (an
      # interrupted setup, a hook removed by hand): uninstall must keep going
      [ ! -f .claude/settings.json ] || { jq 'if (.hooks.SessionStart | type) == "array" then
-           .hooks.SessionStart |= (map(.hooks |= ((. // []) | map(select((.command // "") | test("(^|[^A-Za-z0-9_.-])\\.claude/hooks/cloud-auth\\.sh($|[^A-Za-z0-9_.-])") | not))))
+           .hooks.SessionStart |= (map(.hooks |= ((. // []) | map(select((.command // "") | test("^\\s*((ba)?sh\\s+)?\"?(\\$\\{?CLAUDE_PROJECT_DIR\\}?\"?/|\\./)?\\.claude/hooks/cloud-auth\\.sh\"?\\s*$") | not))))
              | map(select(.hooks | length > 0)))
            | (if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end)
            | (if .hooks == {} then del(.hooks) else . end)

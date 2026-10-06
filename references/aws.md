@@ -648,26 +648,7 @@ AWS_REGION=$(jq -r '(if .providers then (.providers[] | select(.provider=="aws")
 }' credentials.json > credentials_clean.json) && mv credentials_clean.json credentials.json
 ```
 
-If a later step fails (encrypting, committing), roll the member back before retrying. This snippet stands alone, so it works from a fresh shell:
-
-```bash
-# Repo-scoped IAM names (see "IAM Names" above): define aws_cfg and
-# iam_user_name as in the snippet above first
-GROUP_NAME=$(aws_cfg service_account); GROUP_NAME="${GROUP_NAME:-claude-agents}"
-USER_PREFIX=$(aws_cfg iam_user_prefix); USER_PREFIX="${USER_PREFIX:-claude-agent}"
-IAM_USER=$(iam_user_name "$(git config user.email)" "$USER_PREFIX")
-# Only in this repo's account: a same-named user elsewhere is not this member
-AWS_ACCOUNT_ID=$(aws_cfg project_id)
-CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text) \
-  || { echo "ERROR: could not identify the bootstrap credentials' account; nothing deleted."; exit 1; }
-[ -n "$AWS_ACCOUNT_ID" ] && [ "$CALLER_ACCOUNT" = "$AWS_ACCOUNT_ID" ] \
-  || { echo "ERROR: bootstrap credentials belong to account $CALLER_ACCOUNT, not ${AWS_ACCOUNT_ID:-the configured one}; nothing deleted."; exit 1; }
-for k in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
-  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$k"
-done
-aws iam remove-user-from-group --group-name "$GROUP_NAME" --user-name "$IAM_USER"
-aws iam delete-user --user-name "$IAM_USER" && rm -f credentials.json
-```
+If a later step fails (encrypting, committing), roll the member back before retrying with "Rollback a Failed Setup" above. The creation snippet recorded this member's user in `.cloud-setup-pending.json` (`member_only`), so the rollback removes exactly that user and its keys, from any shell and whatever `git config user.email` says now, never the shared group, and only in the recorded account. An `ambiguous` record (the user appeared after a failed `create-user`) needs `CONFIRM_USER=1` once the user has confirmed it is this run's.
 
 ## Grant Roles (Attach Policies to Group)
 

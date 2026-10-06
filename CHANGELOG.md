@@ -160,6 +160,9 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - AWS first-time setup no longer deletes a user that appears after a failed `create-user` (it may be a concurrent setup's for the same email): the record is marked `ambiguous`, and only this run's group is rolled back.
 - Azure Add Team Member checks the `credentials.json` write and revokes the new secret if it fails.
 - GCP Add Team Member records an `unknown key of <account>` placeholder under `unrevoked` when a key create call fails and the keys cannot be listed afterwards.
+- `install.sh` and `update.sh` also require `scripts/discard-credential.sh` and every workflow or reference file `SKILL.md` names, present and non-empty, before replacing the skill.
+- Uninstall removes only SessionStart hooks that run `cloud-auth.sh` directly, not commands that pass its path to another program.
+- AWS Add Team Member's post-creation rollback is "Rollback a Failed Setup" (bound to the `member_only` record) instead of a standalone snippet that rebuilt the user name from the current git email.
 
 ## [1.4.0] - 2026-04-10
 
