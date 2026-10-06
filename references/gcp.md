@@ -273,6 +273,10 @@ esac
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# Create nothing unless git really ignores the plaintext and the record: a
+# failed write (read-only file, full disk) would leave a live key committable
+git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
+  || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
 # Record the account before creating it (not secret), so "Rollback a Failed
 # Setup" can find it from any shell if this run stops part-way
 jq -n --arg p "$PROJECT_ID" --arg s "$SA_ID@$PROJECT_ID.iam.gserviceaccount.com" \

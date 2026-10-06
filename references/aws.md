@@ -327,6 +327,10 @@ rollback_aws_setup() {
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# Create nothing unless git really ignores the plaintext and the record: a
+# failed write (read-only file, full disk) would leave a live key committable
+git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
+  || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
 pending() {   # written whole to a temp file, then renamed: never left half-written
   jq -n --arg a "$AWS_ACCOUNT_ID" --arg g "$GROUP_NAME" --arg p "$USER_PREFIX" --arg u "${1:-}" \
     '{provider: "aws", account: $a, group: $g, user_prefix: $p} + (if $u != "" then {iam_user: $u} else {} end)' \
@@ -550,6 +554,10 @@ rollback_member() {
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# Create nothing unless git really ignores the plaintext and the record: a
+# failed write (read-only file, full disk) would leave a live key committable
+git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
+  || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
 # The name must be free first: a user that already exists belongs to someone
 # else (another member whose email maps to the same name, or an earlier
 # setup), and recording it would let a later rollback delete it

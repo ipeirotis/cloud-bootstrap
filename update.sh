@@ -8,7 +8,9 @@ set -euo pipefail
 REPO_URL="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main"
 # Read the version, changelog, manifest and files from one commit: main can
 # move between requests, and a mix of two releases would install silently
-SHA=$(curl -fsSL -H 'Accept: application/vnd.github.sha' https://api.github.com/repos/ipeirotis/cloud-bootstrap/commits/main)
+# Resolved with git, not GitHub's REST API, whose unauthenticated quota is
+# shared by everyone behind the same IP address
+SHA=$(git ls-remote https://github.com/ipeirotis/cloud-bootstrap.git refs/heads/main | cut -f1)
 printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo "ERROR: could not resolve the current release commit." >&2; exit 1; }
 SRC="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/$SHA"
 DEST=".claude/skills/cloud-bootstrap"

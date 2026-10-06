@@ -217,6 +217,10 @@ fi
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# Create nothing unless git really ignores the plaintext and the record: a
+# failed write (read-only file, full disk) would leave a live key committable
+git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
+  || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way
@@ -307,6 +311,10 @@ EXISTING=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
 # The record must never be committed: make sure .gitignore covers it (setups
 # made before it existed lack the rule)
 grep -qxF '/.cloud-setup-pending.json' .gitignore 2>/dev/null || echo '/.cloud-setup-pending.json' >> .gitignore
+# Create nothing unless git really ignores the plaintext and the record: a
+# failed write (read-only file, full disk) would leave a live key committable
+git check-ignore -q credentials.json && git check-ignore -q .cloud-setup-pending.json \
+  || { echo "ERROR: .gitignore does not cover /credentials.json and /.cloud-setup-pending.json (First-Time Setup step 1a); nothing created."; exit 1; }
 # Record the name and subscription before creating anything (not secret), so
 # "Rollback a Failed Setup" can find the application and its role assignments
 # from any shell if this run stops part-way

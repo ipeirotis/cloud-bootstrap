@@ -123,7 +123,9 @@ curl -sSL https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main/insta
 ```bash
 # From the repo root
 # Every file from one commit: main can move between downloads
-SHA=$(curl -fsSL -H 'Accept: application/vnd.github.sha' https://api.github.com/repos/ipeirotis/cloud-bootstrap/commits/main)
+# Resolved with git, not GitHub's REST API, whose unauthenticated quota is
+# shared by everyone behind the same IP address
+SHA=$(git ls-remote https://github.com/ipeirotis/cloud-bootstrap.git refs/heads/main | cut -f1)
 printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo "ERROR: could not resolve the current release commit."; exit 1; }
 BASE=https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/$SHA
 DEST=.claude/skills/cloud-bootstrap

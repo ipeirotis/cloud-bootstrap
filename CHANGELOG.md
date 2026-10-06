@@ -136,6 +136,8 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP activation (SessionStart hook template, multi-provider hook, Activate snippet) also checks the decrypted key's `private_key_id` against `key_ids`: a key recorded for another member, or one that differs from the member's own entry outside an open rotation, is not activated.
 - `discard-credential.sh` (GCP) counts a 404 as "already deleted" only once it persists across retries, since a key created moments earlier can read as missing for a minute or more.
 - Uninstall matches the `## Cloud credentials` heading case-insensitively.
+- The installer, updater and manual install resolve the release commit with `git ls-remote` instead of GitHub's unauthenticated REST API, whose 60-requests-per-hour quota is shared per IP address.
+- Every identity-creation snippet stops before any provider request unless `git check-ignore` confirms `credentials.json` and `.cloud-setup-pending.json` are ignored, so a failed `.gitignore` write cannot leave a live key committable.
 
 ## [1.4.0] - 2026-04-10
 
