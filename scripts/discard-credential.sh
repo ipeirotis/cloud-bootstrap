@@ -82,6 +82,7 @@ case "$PROVIDER" in
     CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
     if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
       record_unrevoked "${AK:-unknown access key}" "bootstrap credentials are for account ${CALLER:-unknown}, expected ${ACCOUNT:-none configured}"
+      rm -f "$CREDS" credentials_clean.json   # the key ID is recorded; the plaintext must not stay
       exit 1
     fi
     # The only user whose keys this script may delete: this member's, as the

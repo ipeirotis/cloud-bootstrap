@@ -402,6 +402,14 @@ PENDING=.cloud-setup-pending.json
 pend() { jq -r --arg k "$1" 'select(.provider == "aws") | .[$k] // empty' "$PENDING" 2>/dev/null; }
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(pend account)}"
 IAM_USER="${IAM_USER:-$(pend iam_user)}"   # empty: the user was never created
+# An ambiguous record (Add Team Member found the user after a failed
+# create-user) may name a user another run created: delete it only when a
+# person confirmed it is this run's
+if [ "$(pend ambiguous)" = true ] && [ "${CONFIRM_USER:-}" != 1 ]; then
+  echo "ERROR: $PENDING marks $IAM_USER as possibly created by another run; nothing deleted."
+  echo "Confirm with the user it is this run's user, then re-run with CONFIRM_USER=1 (or delete $PENDING if it is not)."
+  exit 1
+fi
 # An Add Team Member record (member_only) covers only the member's user: the
 # shared group belongs to the whole team and is never deleted here
 if [ "$(pend member_only)" = true ]; then GROUP_NAME=""; else GROUP_NAME="${GROUP_NAME:-$(pend group)}"; fi
@@ -515,10 +523,15 @@ jq -n --arg a "$AWS_ACCOUNT_ID" --arg u "$IAM_USER" \
 # Create user and add to the existing group. Stop unless create-user succeeds:
 # continuing would hand this member whatever user holds that name.
 if ! aws iam create-user --user-name "$IAM_USER"; then
-  # The name was free just before, so a user found now is this run's (a lost
-  # response): keep the record for the rollback unless it is confirmed absent
+  # A user found now was created after the check above: by this run (a lost
+  # response) or by an overlapping run for the same email. Ownership is
+  # unknown, so mark the record ambiguous: the rollback then never deletes the
+  # user unless a person confirms it is this run's
   if OUT=$(aws iam get-user --user-name "$IAM_USER" 2>&1); then
-    echo "ERROR: create-user failed but $IAM_USER now exists; run Rollback a Failed Setup (the record is kept)."
+    jq '. + {ambiguous: true}' .cloud-setup-pending.json > .cloud-setup-pending.json.tmp \
+      && mv .cloud-setup-pending.json.tmp .cloud-setup-pending.json
+    echo "ERROR: create-user failed but $IAM_USER now exists, created by this run or by another run for the same email."
+    echo "Check with the user (and any teammate onboarding the same email) before running Rollback a Failed Setup with CONFIRM_USER=1."
   elif printf '%s' "$OUT" | grep -q NoSuchEntity; then
     rm -f .cloud-setup-pending.json
     echo "ERROR: could not create IAM user $IAM_USER; nothing was created."

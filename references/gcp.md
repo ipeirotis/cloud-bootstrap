@@ -323,7 +323,7 @@ PENDING=.cloud-setup-pending.json
 PROJECT_ID="${PROJECT_ID:-$(jq -r 'select(.provider == "gcp") | .project_id // empty' "$PENDING" 2>/dev/null)}"
 SA_EMAIL="${SA_EMAIL:-$(jq -r 'select(.provider == "gcp") | .service_account // empty' "$PENDING" 2>/dev/null)}"
 [ -n "$PROJECT_ID" ] && [ -n "$SA_EMAIL" ] || { echo "ERROR: set PROJECT_ID and SA_EMAIL (no GCP entry in $PENDING)."; exit 1; }
-RB_OK=1; WORK=$(mktemp -d)
+RB_OK=1; WORK=$(mktemp -d) && [ -d "$WORK" ] || { echo "ERROR: could not create a private temp directory; nothing changed."; exit 1; }
 CRM="https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID"
 if curl -sS --fail -X POST "$CRM:getIamPolicy" -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" -d '{"options": {"requestedPolicyVersion": 3}}' > "$WORK/policy.json"; then
@@ -376,7 +376,7 @@ SA_EMAIL="${SA_EMAIL:-$(jq -r '(if .providers then (.providers[] | select(.provi
 MEMBER="serviceAccount:$SA_EMAIL"
 
 # Private, unique scratch space (no fixed /tmp names to race on or clobber)
-WORK=$(mktemp -d)
+WORK=$(mktemp -d) && [ -d "$WORK" ] || { echo "ERROR: could not create a private temp directory; no role granted."; exit 1; }
 
 # Get the current IAM policy, including etag, version, and auditConfigs
 if ! curl -sS --fail -X POST \
