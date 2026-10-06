@@ -646,9 +646,17 @@ Policies are attached to the **group**, not individual users. This way all team 
 
 ```bash
 aws_cfg() { jq -r "(if .providers then (.providers[] | select(.provider==\"aws\") | .$1) else (select(.provider==\"aws\") | .$1) end) // empty" .cloud-config.json 2>/dev/null; }
-# The group First-Time Setup printed, else the configured one
-GROUP_NAME="${GROUP_NAME:-$(aws_cfg service_account)}"
-[ -n "$GROUP_NAME" ] || { echo "ERROR: set GROUP_NAME to the group First-Time Setup created."; exit 1; }
+# This repo's group: the one the setup record names during first-time setup,
+# else the configured one. A GROUP_NAME left in the shell by another setup
+# must not redirect the policies, so a conflicting one stops the snippet
+WANT_GROUP=$(jq -r 'select(.provider=="aws") | .group // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_GROUP="${WANT_GROUP:-$(aws_cfg service_account)}"
+if [ -n "$WANT_GROUP" ]; then
+  [ -z "${GROUP_NAME:-}" ] || [ "$GROUP_NAME" = "$WANT_GROUP" ] \
+    || { echo "ERROR: GROUP_NAME is $GROUP_NAME, but this repo's group is $WANT_GROUP; nothing changed. Unset GROUP_NAME."; exit 1; }
+  GROUP_NAME="$WANT_GROUP"
+fi
+[ -n "${GROUP_NAME:-}" ] || { echo "ERROR: set GROUP_NAME to the group First-Time Setup created."; exit 1; }
 # Change nothing unless these credentials are in this repo's account (from the
 # config, or during setup from its record): group names are only unique per
 # account, and the policy commands take no account

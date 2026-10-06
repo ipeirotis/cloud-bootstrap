@@ -328,6 +328,19 @@ for i in $(seq 0 $((PROVIDER_COUNT - 1))); do
         echo "WARNING: $ENC_FILE is not for application ${APP_CFG:-configured}; skipping Azure."
         rm -f /tmp/credentials.json; continue
       fi
+      # ...and only this member's own secret: key_ids maps each member to theirs (an
+      # open rotation, which commits the new secret before key_ids names it, excepted;
+      # credentials from before keyId was stored carry none and are not checked)
+      WHY=$(jq -r --arg e "$USER_EMAIL" --arg k "$(jq -r '.keyId // empty' /tmp/credentials.json)" \
+        '(if .providers then (.providers[] | select(.provider == "azure")) else . end) | (.key_ids // {}) as $m
+        | if $k == "" then "ok"
+          elif any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its secret is recorded for another member"
+          elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its secret differs from the key_ids entry for this member"
+          else "ok" end' "$CONFIG" 2>/dev/null)
+      if [ "$WHY" != ok ]; then
+        echo "WARNING: $ENC_FILE not used: ${WHY:-its secret could not be checked}; skipping Azure."
+        rm -f /tmp/credentials.json; continue
+      fi
       if ! az login --service-principal \
         --username "$(jq -r .appId /tmp/credentials.json)" \
         --password "$(jq -r .password /tmp/credentials.json)" \

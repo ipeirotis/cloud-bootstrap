@@ -142,6 +142,10 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - GCP member removal retries a 404 before counting a key as deleted, as `discard-credential.sh` does.
 - Azure member removal also removes every secret carrying the member's `claude-code-<email>` label (members added before `key_ids` existed had only one, hand-picked `KEY_ID`), skipping any the config records for another member.
 - GCP and Azure member removal skip `unrevoked` placeholders that name no ID (`unknown key of ...`, `secret labelled ...`): the loops split them into words and tried to delete each word as a key, so removal could never finish.
+- GCP and Azure member removal refuse a `KEY_ID` override the config records for another member, and require `CONFIRM_KEY=1` for one not recorded (or, on Azure, labelled) for the member being removed.
+- Azure activation (hook template, multi-provider hook, Activate snippet) checks the decrypted secret's `keyId` against `key_ids`, as GCP activation does; credentials from before `keyId` was stored are not checked.
+- GCP rotation's revoke step retries a 404 before clearing a key's records.
+- AWS and Azure role grants resolve the group, application and subscription from the setup record or config, and stop when a `GROUP_NAME`, `APP_ID`, `SUBSCRIPTION_ID` or `credentials.json` left from another setup disagrees.
 
 ## [1.4.0] - 2026-04-10
 

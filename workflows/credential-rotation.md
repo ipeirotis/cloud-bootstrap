@@ -295,9 +295,15 @@ Use this when credentials need to be replaced (e.g., age warning, suspected comp
    revoke() {   # $1 = key ID; succeeds once the key is gone
      case "$PROVIDER" in
        gcp)
-         HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-           "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$1" \
-           -H "Authorization: Bearer $TOKEN")
+         # A key created moments ago can read as missing (404) for a minute
+         # or more: count 404 as gone only once it persists across retries
+         for DELAY in 0 20 40 60; do
+           sleep "$DELAY"
+           HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+             "https://iam.googleapis.com/v1/projects/$PROJECT_ID/serviceAccounts/$SA_EMAIL/keys/$1" \
+             -H "Authorization: Bearer $TOKEN")
+           [ "$HTTP" = 404 ] || break
+         done
          [ "$HTTP" = 200 ] || { [ "$HTTP" = 404 ] && echo "Key $1 no longer exists; clearing its record."; } ;;
        aws)
          # The key's owner, from AWS itself; NoSuchEntity means it is already gone

@@ -101,6 +101,19 @@ if [ -z "$APP_CFG" ] || [ "$(jq -r '.appId // empty' /tmp/credentials.json)" != 
   echo "WARNING: $ENC_FILE is not for application ${APP_CFG:-configured in .cloud-config.json}; not activating it."
   exit 0
 fi
+# ...and only this member's own secret: key_ids maps each member to theirs (an
+# open rotation, which commits the new secret before key_ids names it, excepted;
+# credentials from before keyId was stored carry none and are not checked)
+WHY=$(jq -r --arg e "$USER_EMAIL" --arg k "$(jq -r '.keyId // empty' /tmp/credentials.json)" \
+  '(if .providers then (.providers[] | select(.provider == "azure")) else . end) | (.key_ids // {}) as $m
+  | if $k == "" then "ok"
+    elif any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its secret is recorded for another member"
+    elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its secret differs from the key_ids entry for this member"
+    else "ok" end' "$CONFIG" 2>/dev/null)
+if [ "$WHY" != ok ]; then
+  echo "WARNING: $ENC_FILE not activated: ${WHY:-its secret could not be checked}."
+  exit 0
+fi
 
 if ! az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
@@ -583,14 +596,26 @@ az account show >/dev/null 2>&1 \
   || { echo "ERROR: az is not signed in here; use the REST path below with ARM_TOKEN/GRAPH_TOKEN."; exit 1; }
 # APP_ID is the service principal's appId. During first-time setup it comes from
 # the credentials you just created; in later sessions read it from config.
-APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
-# Provider-aware fallback: in multi-provider configs the app id is in providers[]
-APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
-[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
+# This repo's application: the setup record's during first-time setup, else the
+# configured one. An APP_ID left in the shell by another setup, or a stale
+# credentials.json, must not receive the roles: a conflicting one stops here
+WANT_APP=$(jq -r 'select(.provider=="azure") | .app_id // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_APP="${WANT_APP:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+for A in "${APP_ID:-}" "$(jq -r '.appId // empty' credentials.json 2>/dev/null)"; do
+  [ -z "$A" ] || [ -z "$WANT_APP" ] || [ "$A" = "$WANT_APP" ] \
+    || { echo "ERROR: application $A is not this repo's ($WANT_APP); nothing assigned. Unset APP_ID or check credentials.json."; exit 1; }
+done
+APP_ID="${WANT_APP:-${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}}"
+[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from the setup record, .cloud-config.json or credentials.json."; exit 1; }
 
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+# The same for the subscription: the setup record's, else the configured one
+WANT_SUB=$(jq -r 'select(.provider=="azure") | .subscription // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_SUB="${WANT_SUB:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -z "${SUBSCRIPTION_ID:-}" ] || [ -z "$WANT_SUB" ] || [ "$SUBSCRIPTION_ID" = "$WANT_SUB" ] \
+  || { echo "ERROR: SUBSCRIPTION_ID is $SUBSCRIPTION_ID, but this repo's is $WANT_SUB; nothing assigned. Unset SUBSCRIPTION_ID."; exit 1; }
+SUBSCRIPTION_ID="${WANT_SUB:-${SUBSCRIPTION_ID:-}}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 
@@ -607,13 +632,25 @@ Or via REST API (requires `$ARM_TOKEN` and `$GRAPH_TOKEN`):
 # Resolve the service principal's object id from its appId before assigning a
 # role. The role assignment's principalId must be this SP object id, not the
 # appId, or the assignment is created against an empty/incorrect principal.
-APP_ID="${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}"
-# Provider-aware fallback: in multi-provider configs the app id is in providers[]
-APP_ID="${APP_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
-[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from credentials.json or .cloud-config.json."; exit 1; }
+# This repo's application: the setup record's during first-time setup, else the
+# configured one. An APP_ID left in the shell by another setup, or a stale
+# credentials.json, must not receive the roles: a conflicting one stops here
+WANT_APP=$(jq -r 'select(.provider=="azure") | .app_id // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_APP="${WANT_APP:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .service_account) else (select(.provider=="azure") | .service_account) end) // empty' .cloud-config.json 2>/dev/null)}"
+for A in "${APP_ID:-}" "$(jq -r '.appId // empty' credentials.json 2>/dev/null)"; do
+  [ -z "$A" ] || [ -z "$WANT_APP" ] || [ "$A" = "$WANT_APP" ] \
+    || { echo "ERROR: application $A is not this repo's ($WANT_APP); nothing assigned. Unset APP_ID or check credentials.json."; exit 1; }
+done
+APP_ID="${WANT_APP:-${APP_ID:-$(jq -r '.appId // empty' credentials.json 2>/dev/null)}}"
+[ -n "$APP_ID" ] || { echo "ERROR: could not resolve the app id from the setup record, .cloud-config.json or credentials.json."; exit 1; }
 # During first-time setup .cloud-config.json does not exist yet: use the
 # subscription ID gathered in Step 2, and read config only in later sessions.
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+# The same for the subscription: the setup record's, else the configured one
+WANT_SUB=$(jq -r 'select(.provider=="azure") | .subscription // empty' .cloud-setup-pending.json 2>/dev/null)
+WANT_SUB="${WANT_SUB:-$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") | .project_id) else (select(.provider=="azure") | .project_id) end) // empty' .cloud-config.json 2>/dev/null)}"
+[ -z "${SUBSCRIPTION_ID:-}" ] || [ -z "$WANT_SUB" ] || [ "$SUBSCRIPTION_ID" = "$WANT_SUB" ] \
+  || { echo "ERROR: SUBSCRIPTION_ID is $SUBSCRIPTION_ID, but this repo's is $WANT_SUB; nothing assigned. Unset SUBSCRIPTION_ID."; exit 1; }
+SUBSCRIPTION_ID="${WANT_SUB:-${SUBSCRIPTION_ID:-}}"
 [ -n "$SUBSCRIPTION_ID" ] || { echo "ERROR: set SUBSCRIPTION_ID to the subscription gathered in Step 2."; exit 1; }
 SP_OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/servicePrincipals" \
   --data-urlencode "\$filter=appId eq '$APP_ID'" \
@@ -795,7 +832,7 @@ curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
   -H "Authorization: Bearer $GRAPH_TOKEN" | jq '.passwordCredentials[] | {displayName, keyId, endDateTime}'
 ```
 
-Remove a team member's secrets (if they leave); the block resolves the application itself. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. It also removes every secret labelled `claude-code-<email>` (the label setup gives each member's secret), which covers members added before `key_ids` existed; a secret the config records for another member is left alone. For an unlabelled secret, set `KEY_ID` to it.
+Remove a team member's secrets (if they leave); the block resolves the application itself. This removes every secret the member still has: their current one (`key_ids` in `.cloud-config.json`) and any old ones in their `revoke_pending` list. Each ID leaves the config as soon as Graph confirms its removal (HTTP 204), and the credential file goes only when none remain, so the repo never drops the record of a secret that is still live. It also removes every secret labelled `claude-code-<email>` (the label setup gives each member's secret), which covers members added before `key_ids` existed; a secret the config records for another member is left alone. For an unlabelled secret, set `KEY_ID` to it and, once the user has confirmed it is the member's, `CONFIRM_KEY=1`; a `KEY_ID` the config records for another member is refused.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -824,6 +861,16 @@ OTHERS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | sele
   | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)
   | .value | (if type == "array" then .[] else . end)' .cloud-config.json)
 for K in $LABELLED; do printf '%s\n' $OTHERS | grep -qxF "$K" || IDS="$IDS $K"; done
+# A KEY_ID override must not be another member's secret, and one neither
+# recorded for nor labelled for this member needs CONFIRM_KEY=1 once the person
+# has checked it is theirs: a stale or mistyped ID would otherwise remove a
+# teammate's working secret
+if [ -n "${KEY_ID:-}" ]; then
+  ! printf '%s\n' $OTHERS | grep -qxF "$KEY_ID" \
+    || { echo "ERROR: KEY_ID $KEY_ID is recorded for another member; nothing removed."; exit 1; }
+  printf '%s\n' $IDS | grep -qxF "$KEY_ID" || [ "${CONFIRM_KEY:-}" = 1 ] \
+    || { echo "ERROR: KEY_ID $KEY_ID is not recorded or labelled for $MEMBER_EMAIL. Confirm it is theirs, then rerun with CONFIRM_KEY=1; nothing removed."; exit 1; }
+fi
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
   # A compromise rotation may already have deleted the member's only
@@ -892,6 +939,16 @@ APP_CFG=$(jq -r '(if .providers then (.providers[] | select(.provider=="azure") 
 # commands would otherwise run as it although this activation failed
 [ -n "$APP_CFG" ] && [ "$(jq -r '.appId // empty' /tmp/credentials.json)" = "$APP_CFG" ] \
   || { az logout >/dev/null 2>&1; rm -f /tmp/credentials.json; echo "ERROR: the credential is not for application ${APP_CFG:-configured in .cloud-config.json}; logged out."; exit 1; }
+# ...and only this member's own secret: key_ids maps each member to theirs (an
+# open rotation, which commits the new secret before key_ids names it, excepted;
+# credentials from before keyId was stored carry none and are not checked)
+WHY=$(jq -r --arg e "$(git config user.email)" --arg k "$(jq -r '.keyId // empty' /tmp/credentials.json)" \
+  '(if .providers then (.providers[] | select(.provider == "azure")) else . end) | (.key_ids // {}) as $m
+  | if $k == "" then "ok"
+    elif any($m | to_entries[]; .key != $e and (.value | split("/") | last) == $k) then "its secret is recorded for another member"
+    elif ($m[$e] // "") != "" and ($m[$e] | split("/") | last) != $k and ((.rotating // {})[$e] // "") == "" then "its secret differs from the key_ids entry for this member"
+    else "ok" end' .cloud-config.json 2>/dev/null)
+[ "$WHY" = ok ] || { az logout >/dev/null 2>&1; rm -f /tmp/credentials.json; echo "ERROR: the credential was not activated: ${WHY:-its secret could not be checked}; logged out."; exit 1; }
 az login --service-principal \
   --username "$(jq -r .appId /tmp/credentials.json)" \
   --password "$(jq -r .password /tmp/credentials.json)" \

@@ -635,7 +635,7 @@ curl -X GET \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. A member's `revoke_pending` list names old keys a rotation could not delete yet; the snippet below deletes those too, since they are still live. It skips `unrevoked` entries marked `ambiguous` (keys that appeared while a create call failed): such a key may belong to a teammate who was onboarding at the same time, so compare it with every `key_ids` value, delete it by hand only if no member has it, then drop the entry.
+Delete a member's key (if a team member leaves or a key is compromised). Look the key up in the `key_ids` map ("Record the key's owner"). Setups made before that map existed have no entry: list the keys as above and match the member by the key's `validAfterTime` against the commit that added their `.enc` file (`git log --diff-filter=A --format=%cI -- <file>`); if no key matches unambiguously, ask the user rather than guess. Set `KEY_ID` to the key found and, once the user has confirmed it, `CONFIRM_KEY=1`; a `KEY_ID` the config records for another member is refused. A member's `revoke_pending` list names old keys a rotation could not delete yet; the snippet below deletes those too, since they are still live. It skips `unrevoked` entries marked `ambiguous` (keys that appeared while a create call failed): such a key may belong to a teammate who was onboarding at the same time, so compare it with every `key_ids` value, delete it by hand only if no member has it, then drop the entry.
 
 ```bash
 MEMBER_EMAIL="departed-user@example.com"
@@ -654,6 +654,20 @@ IDS=$(jq -r --arg e "$MEMBER_EMAIL" '
   | (if .providers then (.providers[] | select(.provider=="gcp")) else . end)
   | ([.key_ids[$e] // empty, .rotating[$e] // empty] + ((.revoke_pending[$e] // []) | if type == "string" then [.] else . end) + $u) | unique | .[]' .cloud-config.json)
 # A member added before key_ids existed: the key found from the listing
+# A KEY_ID override must not be another member's key, and one the config does
+# not record for this member needs CONFIRM_KEY=1 once the person has checked it
+# is theirs (key list, creation time): a stale or mistyped ID would otherwise
+# delete a teammate's working key
+if [ -n "${KEY_ID:-}" ]; then
+  KEY_ID="${KEY_ID##*/}"
+  OTHERS=$(jq -r --arg e "$MEMBER_EMAIL" '(if .providers then (.providers[] | select(.provider=="gcp")) else . end)
+    | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][] | to_entries[] | select(.key != $e)
+    | .value | (if type == "array" then .[] else . end) | tostring | split("/") | last' .cloud-config.json)
+  ! printf '%s\n' $OTHERS | grep -qxF "$KEY_ID" \
+    || { echo "ERROR: KEY_ID $KEY_ID is recorded for another member; nothing deleted."; exit 1; }
+  printf '%s\n' $IDS | grep -qxF "$KEY_ID" || [ "${CONFIRM_KEY:-}" = 1 ] \
+    || { echo "ERROR: KEY_ID $KEY_ID is not recorded for $MEMBER_EMAIL. Confirm it is theirs, then rerun with CONFIRM_KEY=1; nothing deleted."; exit 1; }
+fi
 IDS=$(printf '%s\n' $IDS ${KEY_ID:-} | sort -u)
 if [ -z "$IDS" ]; then
   # A compromise rotation may already have deleted the member's only
