@@ -38,7 +38,9 @@ record_unrevoked() {   # $1 = identifier, $2 = note
        '.unrevoked = ((.unrevoked // []) + [{provider: $p, id: $id, member: $m, note: $n, at: $t}])' \
        "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG" \
       && echo "Recorded under \"unrevoked\" in $CONFIG: commit it, and revoke the credential by hand." \
-      || echo "ERROR: could not record it in $CONFIG either: note \"$PROVIDER $1\" and revoke it by hand."
+      || { rm -f "$CONFIG.tmp"; KEEP_PLAINTEXT=1
+           echo "ERROR: could not record it in $CONFIG either: note \"$PROVIDER $1\" and revoke it by hand."
+           echo "credentials.json is kept, so the next session still sees this interrupted run."; }
   else
     # Only during first-time setup: its rollback deletes the whole identity,
     # which removes this credential too.
@@ -46,12 +48,28 @@ record_unrevoked() {   # $1 = identifier, $2 = note
   fi
 }
 
-STATUS=1; REVOKED_ID=""
+STATUS=1; REVOKED_ID=""; KEEP_PLAINTEXT=""
+# A credential the config records for ANOTHER member (current key, key being
+# rotated, or one queued for revocation) is never this run's: a stale or
+# mistyped CRED_ID must not revoke a teammate's working key or secret
+owned_by_other() {   # $1 = key ID (bare, or a GCP resource name)
+  [ -f "$CONFIG" ] || return 1
+  jq -e --arg p "$PROVIDER" --arg e "$USER_EMAIL" --arg id "${1##*/}" '
+    (if .providers then (.providers[] | select(.provider == $p)) else . end)
+    | [(.key_ids // {}), (.rotating // {}), (.revoke_pending // {})][]
+    | to_entries[] | select(.key != $e)
+    | (.value | if type == "array" then .[] else . end) | tostring | split("/") | last
+    | select(. == $id)' "$CONFIG" >/dev/null 2>&1
+}
 case "$PROVIDER" in
   gcp)
     PROJECT_ID="${PROJECT_ID:-$(cfg project_id)}"
     SA_EMAIL="${SA_EMAIL:-$(cfg service_account)}"
     ID="${CRED_ID:-$(cred .private_key_id)}"
+    if [ -n "$ID" ] && owned_by_other "$ID"; then
+      echo "ERROR: GCP key ${ID##*/} is recorded in .cloud-config.json for another member; not deleting it. Check CRED_ID / credentials.json."
+      exit 1
+    fi
     case "$ID" in
       projects/*) NAME="$ID" ;;
       "") NAME="" ;;
@@ -82,7 +100,8 @@ case "$PROVIDER" in
     CALLER=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
     if [ -z "$ACCOUNT" ] || [ "$CALLER" != "$ACCOUNT" ]; then
       record_unrevoked "${AK:-unknown access key}" "bootstrap credentials are for account ${CALLER:-unknown}, expected ${ACCOUNT:-none configured}"
-      rm -f "$CREDS" credentials_clean.json   # the key ID is recorded; the plaintext must not stay
+      # The key ID is recorded (unless that failed): the plaintext must not stay
+      [ -n "$KEEP_PLAINTEXT" ] || rm -f "$CREDS" credentials_clean.json
       exit 1
     fi
     # The only user whose keys this script may delete: this member's, as the
@@ -184,6 +203,17 @@ case "$PROVIDER" in
     # The new secret: given, else the keyId stored with the credential, else
     # (older credentials) the newest secret carrying this member's label
     KID="${CRED_ID:-${NEW_SECRET_KEY_ID:-$(cred .keyId)}}"
+    if [ -n "$KID" ] && owned_by_other "$KID"; then
+      echo "ERROR: Azure secret $KID is recorded in .cloud-config.json for another member; not removing it. Check CRED_ID / credentials.json."
+      exit 1
+    fi
+    # A secret labelled for another member is theirs, whatever the config says
+    if [ -n "$KID" ] && [ -n "$OBJECT_ID" ] && LBL=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+         -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg k "$KID" '.passwordCredentials[] | select(.keyId == $k) | .displayName // empty') \
+       && [ -n "$LBL" ] && [ "$LBL" != "claude-code-$USER_EMAIL" ]; then
+      echo "ERROR: Azure secret $KID is labelled \"$LBL\", not this member's; not removing it."
+      exit 1
+    fi
     if [ -z "$KID" ] && [ -n "$OBJECT_ID" ]; then
       KID=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
         -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r --arg n "claude-code-$USER_EMAIL" \
@@ -223,5 +253,6 @@ if [ "$STATUS" = 0 ] && [ -f "$CONFIG" ] && [ -n "${REVOKED_ID:-}" ]; then
     || { rm -f "$CONFIG.tmp"; echo "WARNING: $REVOKED_ID is deleted, but $CONFIG could not be updated; remove any entry naming it by hand."; }
 fi
 
+if [ -n "$KEEP_PLAINTEXT" ]; then exit 1; fi
 rm -f "$CREDS" credentials_clean.json
 exit "$STATUS"

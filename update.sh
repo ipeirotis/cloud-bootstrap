@@ -6,6 +6,11 @@
 set -euo pipefail
 
 REPO_URL="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main"
+# Read the version, changelog, manifest and files from one commit: main can
+# move between requests, and a mix of two releases would install silently
+SHA=$(curl -fsSL -H 'Accept: application/vnd.github.sha' https://api.github.com/repos/ipeirotis/cloud-bootstrap/commits/main)
+printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo "ERROR: could not resolve the current release commit." >&2; exit 1; }
+SRC="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/$SHA"
 DEST=".claude/skills/cloud-bootstrap"
 ASSUME_YES=0
 [ "${1:-}" = "--yes" ] && ASSUME_YES=1
@@ -33,7 +38,7 @@ fi
 echo "Installed version: $INSTALLED_VERSION"
 
 # Fetch latest version (fails on HTTP errors instead of reading an error body)
-LATEST_VERSION=$(curl -fsSL "$REPO_URL/VERSION" | tr -d '[:space:]')
+LATEST_VERSION=$(curl -fsSL "$SRC/VERSION" | tr -d '[:space:]')
 if [ -z "$LATEST_VERSION" ]; then
   echo "ERROR: Could not fetch latest version." >&2
   exit 1
@@ -52,7 +57,7 @@ echo "--- Changelog (new entries since $INSTALLED_VERSION) ---"
 echo ""
 
 # Fetch and display changelog, showing only entries newer than the installed version
-CHANGELOG=$(curl -fsSL "$REPO_URL/CHANGELOG.md")
+CHANGELOG=$(curl -fsSL "$SRC/CHANGELOG.md")
 echo "$CHANGELOG" | awk -v installed="$INSTALLED_VERSION" '
   /^## \[/ {
     # Extract version from heading like "## [1.2.0] - 2026-04-01"
@@ -92,11 +97,11 @@ fi
 echo "Updating..."
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-curl -fsSL "$REPO_URL/MANIFEST" -o "$TMP/MANIFEST"
+curl -fsSL "$SRC/MANIFEST" -o "$TMP/MANIFEST"
 FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$TMP/MANIFEST")
 for FILE in $FILES; do
   mkdir -p "$TMP/files/$(dirname "$FILE")"
-  curl -fsSL "$REPO_URL/$FILE" -o "$TMP/files/$FILE"
+  curl -fsSL "$SRC/$FILE" -o "$TMP/files/$FILE"
 done
 mkdir -p "$DEST"
 # Build the complete new skill directory next to the installed one, then swap

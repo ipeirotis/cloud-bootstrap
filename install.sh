@@ -9,17 +9,22 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 BASE_URL="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/main"
+# Fetch every file from one commit: main can move between requests, and a mix
+# of two releases would otherwise install without any error
+SHA=$(curl -fsSL -H 'Accept: application/vnd.github.sha' https://api.github.com/repos/ipeirotis/cloud-bootstrap/commits/main)
+printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo "ERROR: could not resolve the current release commit." >&2; exit 1; }
+SRC="https://raw.githubusercontent.com/ipeirotis/cloud-bootstrap/$SHA"
 DEST=".claude/skills/cloud-bootstrap"
 
 # Download everything into a temp dir first, failing on any HTTP error, so a
 # missing file or a 4xx/5xx body never lands in (or half-replaces) the skill.
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-curl -fsSL "$BASE_URL/MANIFEST" -o "$TMP/MANIFEST"
+curl -fsSL "$SRC/MANIFEST" -o "$TMP/MANIFEST"
 FILES=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$TMP/MANIFEST")
 for FILE in $FILES; do
   mkdir -p "$TMP/files/$(dirname "$FILE")"
-  curl -fsSL "$BASE_URL/$FILE" -o "$TMP/files/$FILE"
+  curl -fsSL "$SRC/$FILE" -o "$TMP/files/$FILE"
 done
 
 # Record which files this release installed, so update.sh can remove the ones

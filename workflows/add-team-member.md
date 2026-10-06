@@ -81,14 +81,14 @@ Using the bootstrap token and provider-specific commands:
    ```
    **Note:** In multi-provider mode, `PROVIDER` must be set to the provider being onboarded (e.g., `gcp`, `aws`, `azure`) before running this snippet. Step 1 determines the provider from `.cloud-config.json`.
 4. **GCP:** record the new key's ID under `key_ids` in `.cloud-config.json` ("Record the key's owner" in `references/gcp.md`), so the key can be found when this member leaves. (Azure's "Add Client Secret" snippet records the secret's `keyId` there itself.) Run it before the next step: it reads the ID from `credentials.json` (or, failing that, from the encrypted file).
-5. Commit the new encrypted credentials file and `.cloud-config.json` (it now holds this member's `key_ids` entry for GCP or Azure, and any `unrevoked` record).
-6. **Keep `credentials.json` (and, for AWS, `.cloud-setup-pending.json`) until Step 4 is done.** Until then their presence marks the onboarding as unfinished for the next session ("Recovering an Interrupted Run" in SKILL.md), so a missing SessionStart hook is still added if this run stops.
+5. **Ensure the SessionStart hook first (Step 4)**, then commit the new encrypted credentials file, `.cloud-config.json` (it now holds this member's `key_ids` entry for GCP or Azure, and any `unrevoked` record) and any hook files Step 4 created or changed **in one commit**: the plaintext and setup record are ignored, so only that commit keeps a fresh checkout from having the credential without the hook.
+6. **Only after that commit**, delete the recovery state as shown at the end of Step 4.
 
 ## Step 4: Ensure SessionStart Hook Exists
 
-Check if `.claude/settings.json` already contains a SessionStart hook for the provider's CLI. If not, add one following the "SessionStart Hook" instructions in the provider's reference file. Commit `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` if they were created or modified.
+Run this before the commit in Step 3 item 5. Check if `.claude/settings.json` already contains a SessionStart hook for the provider's CLI. If not, add one following the "SessionStart Hook" instructions in the provider's reference file; `.claude/hooks/cloud-auth.sh` and `.claude/settings.json` then go into that commit.
 
-**Only after the hook is in place and committed, delete the recovery state:**
+**Only after that commit, delete the recovery state:**
 ```bash
 # The marker goes first: a marker left without the plaintext would make
 # the next session roll back the identity this run just committed
