@@ -22,11 +22,22 @@ for FILE in $FILES; do
   curl -fsSL "$BASE_URL/$FILE" -o "$TMP/files/$FILE"
 done
 
-mkdir -p "$DEST"
-cp -R "$TMP/files/." "$DEST/"
 # Record which files this release installed, so update.sh can remove the ones
 # a later release drops
-printf '%s\n' $FILES > "$DEST/.installed-files"
+printf '%s\n' $FILES > "$TMP/files/.installed-files"
+# Swap the complete release in with renames (as update.sh does): a failure
+# leaves an existing installation untouched instead of a mix of two releases
+PARENT=$(dirname "$DEST"); NAME=$(basename "$DEST")
+mkdir -p "$PARENT"
+NEW=$(mktemp -d "$PARENT/.$NAME.new.XXXXXX")
+OLD_DIR="$PARENT/.$NAME.old.$$"
+trap 'rm -rf "$TMP" "$NEW"; if [ -d "$OLD_DIR" ] && [ ! -e "$DEST" ]; then mv "$OLD_DIR" "$DEST"; fi' EXIT
+trap 'exit 1' INT TERM HUP
+cp -R "$TMP/files/." "$NEW/"
+chmod 755 "$NEW"   # mktemp -d creates it 700; match a normal directory
+if [ -e "$DEST" ]; then mv "$DEST" "$OLD_DIR"; fi
+mv "$NEW" "$DEST"
+rm -rf "$OLD_DIR"
 
 INSTALLED_VERSION=$(tr -d '[:space:]' < "$DEST/VERSION")
 INSTALLED_VERSION="${INSTALLED_VERSION:-unknown}"

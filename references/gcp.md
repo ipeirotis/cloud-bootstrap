@@ -287,7 +287,13 @@ case "$RC:$HTTP" in
   *)          # a 5xx or a transport/local failure: the account may exist anyway.
               # It did not exist before, so if it exists now, this call made it.
     rm -f "$RESP"
-    if sa_exists; then S=0; else S=$?; fi
+    # A new service account can take a minute or more to become visible: call
+    # it absent only after it stays absent across retries
+    for DELAY in 0 20 40 60; do
+      sleep "$DELAY"
+      if sa_exists; then S=0; else S=$?; fi
+      [ "$S" = 1 ] || break
+    done
     if [ "$S" = 0 ] && [ "${SA_ID_GENERATED:-}" != 1 ]; then
       # A chosen ID could also be another run's: keep the account for the user
       # to check, recorded in .cloud-setup-pending.json for the rollback
@@ -354,6 +360,17 @@ else
   echo "The service account is kept until its bindings are removed."
 fi
 if [ "$RB_OK" = 1 ]; then
+  # The account and all its keys are gone: drop "unrevoked" entries that name
+  # its keys (a failed discard may have recorded them), or every later phase
+  # check would report credentials that no longer exist
+  if [ -f .cloud-config.json ]; then
+    jq --arg sa "$SA_EMAIL" '
+      .unrevoked = [(.unrevoked // [])[] | select(.provider != "gcp"
+          or ((.id | contains("/serviceAccounts/\($sa)/keys/")) | not)
+             and (.id != "unknown key of \($sa)"))]
+      | if .unrevoked == [] then del(.unrevoked) else . end' .cloud-config.json > .cloud-config.json.tmp \
+      && mv .cloud-config.json.tmp .cloud-config.json && echo "Commit .cloud-config.json if it changed."
+  fi
   rm -f credentials.json "$PENDING"; echo "Rollback complete."
 else
   echo "Rollback incomplete; $PENDING is kept. Re-run this block."; exit 1
