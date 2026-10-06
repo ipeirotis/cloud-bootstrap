@@ -240,6 +240,16 @@ case "$PROVIDER" in
     fi
     APP_ID="${APP_ID:-$EXPECT_APP}"
     OBJECT_ID="${OBJECT_ID:-}"
+    # A supplied or inherited object ID may be another application's: use it
+    # only when it resolves to APP_ID, else look the application up by APP_ID
+    if [ -n "$OBJECT_ID" ]; then
+      GOT_APP=""
+      if [ -n "$APP_ID" ] && [ -n "${GRAPH_TOKEN:-}" ]; then
+        GOT_APP=$(curl -sS --fail "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+          -H "Authorization: Bearer $GRAPH_TOKEN" | jq -r '.appId // empty')
+      fi
+      [ -n "$GOT_APP" ] && [ "$GOT_APP" = "$APP_ID" ] || OBJECT_ID=""
+    fi
     if [ -z "$OBJECT_ID" ] && [ -n "$APP_ID" ] && [ -n "${GRAPH_TOKEN:-}" ]; then
       OBJECT_ID=$(curl -sS --fail -G "https://graph.microsoft.com/v1.0/applications" \
         --data-urlencode "\$filter=appId eq '$APP_ID'" \

@@ -132,6 +132,7 @@ Fixes from a multi-round Codex review of a vendored copy (ipeirotis/sql-llm#28).
 - AWS: when the pending record cannot be marked as unconfirmed after a lost `create-group` (chosen name) or member `create-user` response, setup removes the record instead of leaving one a rollback would act on, and tells the user to resolve the group or user by hand. AWS member removal stops if it cannot clear a deleted key's `unrevoked` entry, since a retry no longer sees that key.
 - Azure CLI rollback selects and verifies the setup's recorded subscription before looking anything up, so a CLI signed in to another tenant cannot make it report "nothing was created" and delete the record while the application stays live.
 - A failed encryption in first-time setup removes only its temp file and the plaintext, never an existing `.enc` file of the same name, which the staged write leaves untouched until the final rename.
+- `discard-credential.sh` (Azure) uses a supplied or inherited `OBJECT_ID` only after confirming it resolves to the configured application's `appId`; otherwise it looks the application up by `APP_ID`, so the label fallback never removes a secret from an unrelated application.
 
 ## [1.4.0] - 2026-04-10
 
